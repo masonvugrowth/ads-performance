@@ -107,7 +107,7 @@ export default function CreativePage() {
   const accName = (id: string) => accounts.find(a => a.id === id)?.account_name || '—'
 
   // Get unique countries from combos for filter
-  const countries = [...new Set(combos.map(c => c.country).filter(Boolean))] as string[]
+  const countries = Array.from(new Set(combos.map(c => c.country).filter(Boolean))) as string[]
 
   // Sort header component
   const SortHeader = ({ col, label, className = '' }: { col: string; label: string; className?: string }) => (

@@ -1,4 +1,8 @@
-"""Sync engine: orchestrates fetching data from ad platforms and upserting into DB."""
+"""Google Ads sync engine: orchestrates fetching and upserting Google Ads data.
+
+Follows the same pattern as sync_meta_account in sync_engine.py.
+Platform separation: this file has NO imports from meta_client.py.
+"""
 
 import logging
 from datetime import date, datetime, timezone
@@ -9,23 +13,25 @@ from app.models.account import AdAccount
 from app.models.ad import Ad
 from app.models.ad_set import AdSet
 from app.models.campaign import Campaign
+from app.models.google_asset_group import GoogleAssetGroup
+from app.models.google_asset import GoogleAsset
 from app.models.metrics import MetricsCache
-from app.services.parse_utils import parse_adset_metadata, parse_campaign_metadata
-from app.services.meta_client import (
-    fetch_ad_insights,
-    fetch_ad_set_insights,
-    fetch_ad_sets,
+from app.services.google_client import (
+    fetch_ad_group_metrics,
+    fetch_ad_groups,
+    fetch_ad_metrics,
     fetch_ads,
-    fetch_campaign_insights,
+    fetch_asset_group_assets,
+    fetch_asset_groups,
+    fetch_campaign_metrics,
     fetch_campaigns,
 )
-from app.services.rule_engine import evaluate_all_rules
-from app.services.creative_service import auto_classify_all_combos
+from app.services.parse_utils import parse_adset_metadata, parse_campaign_metadata
 
 logger = logging.getLogger(__name__)
 
 
-def _upsert_metrics_row(
+def _upsert_google_metrics(
     db: Session,
     campaign_id: str,
     insight: dict,
@@ -33,7 +39,7 @@ def _upsert_metrics_row(
     ad_set_id: str | None = None,
     ad_id: str | None = None,
 ) -> None:
-    """Upsert a single metrics row at any hierarchy level."""
+    """Upsert a single metrics row for Google Ads."""
     q = db.query(MetricsCache).filter(
         MetricsCache.campaign_id == campaign_id,
         MetricsCache.date == insight_date,
@@ -58,7 +64,7 @@ def _upsert_metrics_row(
         "roas": insight["roas"],
         "cpa": insight["cpa"],
         "cpc": insight["cpc"],
-        "frequency": insight["frequency"],
+        "frequency": insight.get("frequency"),
         "add_to_cart": insight.get("add_to_cart", 0),
         "checkouts": insight.get("checkouts", 0),
         "searches": insight.get("searches", 0),
@@ -76,41 +82,42 @@ def _upsert_metrics_row(
             campaign_id=campaign_id,
             ad_set_id=ad_set_id,
             ad_id=ad_id,
-            platform="meta",
+            platform="google",
             date=insight_date,
             **metric_fields,
         )
         db.add(metric)
 
 
-def sync_meta_account(db: Session, account: AdAccount) -> dict:
-    """Sync campaigns, ad sets, ads, and metrics for a single Meta ad account.
+def sync_google_account(db: Session, account: AdAccount) -> dict:
+    """Sync campaigns, ad groups, ads, asset groups, assets, and metrics
+    for a single Google Ads account.
 
-    Returns summary dict with counts.
+    Returns summary dict matching sync_meta_account format.
     """
-    meta_account_id = account.account_id if account.account_id.startswith("act_") else f"act_{account.account_id}"
-    access_token = account.access_token_enc
+    customer_id = account.account_id.replace("-", "")
     summary = {
         "campaigns_synced": 0,
         "adsets_synced": 0,
         "ads_synced": 0,
+        "asset_groups_synced": 0,
+        "assets_synced": 0,
         "metrics_synced": 0,
         "errors": [],
     }
 
-    if not access_token:
-        summary["errors"].append("No access token configured for this account")
+    if not account.access_token_enc:
+        summary["errors"].append("No refresh token configured for this account")
         return summary
 
     # --- 1. Fetch and upsert campaigns ---
     try:
-        raw_campaigns = fetch_campaigns(meta_account_id, access_token)
+        raw_campaigns = fetch_campaigns(customer_id)
     except Exception as e:
         summary["errors"].append(f"Failed to fetch campaigns: {e}")
         return summary
 
     for raw in raw_campaigns:
-        # Parse TA and funnel stage from campaign name
         parsed = parse_campaign_metadata(raw["name"])
 
         existing = (
@@ -131,7 +138,7 @@ def sync_meta_account(db: Session, account: AdAccount) -> dict:
         else:
             campaign = Campaign(
                 account_id=account.id,
-                platform="meta",
+                platform="google",
                 platform_campaign_id=raw["platform_campaign_id"],
                 name=raw["name"],
                 status=raw["status"],
@@ -147,26 +154,28 @@ def sync_meta_account(db: Session, account: AdAccount) -> dict:
             db.add(campaign)
         summary["campaigns_synced"] += 1
 
-    db.flush()  # ensure campaign IDs are available
+    db.flush()
 
-    # --- 2. Fetch and upsert ad sets ---
+    # --- 2. Fetch and upsert ad groups (Search campaigns) ---
     try:
-        raw_adsets = fetch_ad_sets(meta_account_id, access_token)
+        raw_ad_groups = fetch_ad_groups(customer_id)
     except Exception as e:
-        summary["errors"].append(f"Failed to fetch ad sets: {e}")
-        raw_adsets = []
+        summary["errors"].append(f"Failed to fetch ad groups: {e}")
+        raw_ad_groups = []
 
-    for raw in raw_adsets:
+    for raw in raw_ad_groups:
         campaign = (
             db.query(Campaign)
             .filter(Campaign.platform_campaign_id == raw["campaign_id"])
             .first()
         )
         if not campaign:
-            logger.warning("Campaign %s not found for ad set %s, skipping", raw["campaign_id"], raw["platform_adset_id"])
+            logger.warning(
+                "Campaign %s not found for ad group %s, skipping",
+                raw["campaign_id"], raw["platform_adset_id"],
+            )
             continue
 
-        # Parse country from adset name
         parsed = parse_adset_metadata(raw["name"])
 
         existing = (
@@ -177,11 +186,6 @@ def sync_meta_account(db: Session, account: AdAccount) -> dict:
         if existing:
             existing.name = raw["name"]
             existing.status = raw["status"]
-            existing.optimization_goal = raw["optimization_goal"]
-            existing.billing_event = raw["billing_event"]
-            existing.daily_budget = raw["daily_budget"]
-            existing.lifetime_budget = raw["lifetime_budget"]
-            existing.targeting = raw["targeting"]
             existing.country = parsed["country"]
             existing.raw_data = raw["raw_data"]
             existing.updated_at = datetime.now(timezone.utc)
@@ -189,28 +193,21 @@ def sync_meta_account(db: Session, account: AdAccount) -> dict:
             adset = AdSet(
                 campaign_id=campaign.id,
                 account_id=account.id,
-                platform="meta",
+                platform="google",
                 platform_adset_id=raw["platform_adset_id"],
                 name=raw["name"],
                 status=raw["status"],
-                optimization_goal=raw["optimization_goal"],
-                billing_event=raw["billing_event"],
-                daily_budget=raw["daily_budget"],
-                lifetime_budget=raw["lifetime_budget"],
-                targeting=raw["targeting"],
                 country=parsed["country"],
-                start_date=raw.get("start_date"),
-                end_date=raw.get("end_date"),
                 raw_data=raw["raw_data"],
             )
             db.add(adset)
         summary["adsets_synced"] += 1
 
-    db.flush()  # ensure ad set IDs are available
+    db.flush()
 
-    # --- 3. Fetch and upsert ads ---
+    # --- 3. Fetch and upsert RSA ads ---
     try:
-        raw_ads = fetch_ads(meta_account_id, access_token)
+        raw_ads = fetch_ads(customer_id)
     except Exception as e:
         summary["errors"].append(f"Failed to fetch ads: {e}")
         raw_ads = []
@@ -227,7 +224,10 @@ def sync_meta_account(db: Session, account: AdAccount) -> dict:
             .first()
         )
         if not adset or not campaign:
-            logger.warning("Ad set or campaign not found for ad %s, skipping", raw["platform_ad_id"])
+            logger.warning(
+                "Ad set or campaign not found for ad %s, skipping",
+                raw["platform_ad_id"],
+            )
             continue
 
         existing = (
@@ -238,7 +238,6 @@ def sync_meta_account(db: Session, account: AdAccount) -> dict:
         if existing:
             existing.name = raw["name"]
             existing.status = raw["status"]
-            existing.creative_id = raw["creative_id"]
             existing.raw_data = raw["raw_data"]
             existing.updated_at = datetime.now(timezone.utc)
         else:
@@ -246,26 +245,123 @@ def sync_meta_account(db: Session, account: AdAccount) -> dict:
                 ad_set_id=adset.id,
                 campaign_id=campaign.id,
                 account_id=account.id,
-                platform="meta",
+                platform="google",
                 platform_ad_id=raw["platform_ad_id"],
                 name=raw["name"],
                 status=raw["status"],
-                creative_id=raw["creative_id"],
+                creative_id=None,
                 raw_data=raw["raw_data"],
             )
             db.add(ad)
         summary["ads_synced"] += 1
 
-    db.flush()  # ensure ad IDs are available
+    db.flush()
 
-    # --- 4. Fetch and upsert campaign-level metrics ---
+    # --- 4. Fetch and upsert PMax asset groups ---
     try:
-        raw_insights = fetch_campaign_insights(meta_account_id, access_token)
+        raw_asset_groups = fetch_asset_groups(customer_id)
     except Exception as e:
-        summary["errors"].append(f"Failed to fetch campaign insights: {e}")
-        raw_insights = []
+        summary["errors"].append(f"Failed to fetch asset groups: {e}")
+        raw_asset_groups = []
 
-    for insight in raw_insights:
+    for raw in raw_asset_groups:
+        campaign = (
+            db.query(Campaign)
+            .filter(Campaign.platform_campaign_id == raw["campaign_id"])
+            .first()
+        )
+        if not campaign:
+            logger.warning(
+                "Campaign %s not found for asset group %s, skipping",
+                raw["campaign_id"], raw["platform_asset_group_id"],
+            )
+            continue
+
+        existing = (
+            db.query(GoogleAssetGroup)
+            .filter(GoogleAssetGroup.platform_asset_group_id == raw["platform_asset_group_id"])
+            .first()
+        )
+        if existing:
+            existing.name = raw["name"]
+            existing.status = raw["status"]
+            existing.final_urls = raw["final_urls"]
+            existing.raw_data = raw["raw_data"]
+            existing.updated_at = datetime.now(timezone.utc)
+        else:
+            asset_group = GoogleAssetGroup(
+                campaign_id=campaign.id,
+                account_id=account.id,
+                platform_asset_group_id=raw["platform_asset_group_id"],
+                name=raw["name"],
+                status=raw["status"],
+                final_urls=raw["final_urls"],
+                raw_data=raw["raw_data"],
+            )
+            db.add(asset_group)
+        summary["asset_groups_synced"] += 1
+
+    db.flush()
+
+    # --- 5. Fetch and upsert assets ---
+    try:
+        raw_assets = fetch_asset_group_assets(customer_id)
+    except Exception as e:
+        summary["errors"].append(f"Failed to fetch assets: {e}")
+        raw_assets = []
+
+    for raw in raw_assets:
+        asset_group = (
+            db.query(GoogleAssetGroup)
+            .filter(GoogleAssetGroup.platform_asset_group_id == raw["asset_group_id"])
+            .first()
+        )
+        if not asset_group:
+            logger.warning(
+                "Asset group %s not found for asset %s, skipping",
+                raw["asset_group_id"], raw["platform_asset_id"],
+            )
+            continue
+
+        existing = (
+            db.query(GoogleAsset)
+            .filter(
+                GoogleAsset.asset_group_id == asset_group.id,
+                GoogleAsset.platform_asset_id == raw["platform_asset_id"],
+            )
+            .first()
+        )
+        if existing:
+            existing.asset_type = raw["asset_type"]
+            existing.text_content = raw["text_content"]
+            existing.image_url = raw["image_url"]
+            existing.performance_label = raw["performance_label"]
+            existing.raw_data = raw["raw_data"]
+            existing.updated_at = datetime.now(timezone.utc)
+        else:
+            asset = GoogleAsset(
+                asset_group_id=asset_group.id,
+                account_id=asset_group.account_id,
+                platform_asset_id=raw["platform_asset_id"],
+                asset_type=raw["asset_type"],
+                text_content=raw["text_content"],
+                image_url=raw["image_url"],
+                performance_label=raw["performance_label"],
+                raw_data=raw["raw_data"],
+            )
+            db.add(asset)
+        summary["assets_synced"] += 1
+
+    db.flush()
+
+    # --- 6. Fetch and upsert campaign-level metrics ---
+    try:
+        raw_metrics = fetch_campaign_metrics(customer_id)
+    except Exception as e:
+        summary["errors"].append(f"Failed to fetch campaign metrics: {e}")
+        raw_metrics = []
+
+    for insight in raw_metrics:
         campaign = (
             db.query(Campaign)
             .filter(Campaign.platform_campaign_id == insight["campaign_id"])
@@ -279,17 +375,17 @@ def sync_meta_account(db: Session, account: AdAccount) -> dict:
             if isinstance(insight["date"], str)
             else insight["date"]
         )
-        _upsert_metrics_row(db, campaign.id, insight, insight_date)
+        _upsert_google_metrics(db, campaign.id, insight, insight_date)
         summary["metrics_synced"] += 1
 
-    # --- 5. Fetch and upsert ad-set-level metrics ---
+    # --- 7. Fetch and upsert ad-group-level metrics ---
     try:
-        adset_insights = fetch_ad_set_insights(meta_account_id, access_token)
+        ag_metrics = fetch_ad_group_metrics(customer_id)
     except Exception as e:
-        summary["errors"].append(f"Failed to fetch ad-set insights: {e}")
-        adset_insights = []
+        summary["errors"].append(f"Failed to fetch ad group metrics: {e}")
+        ag_metrics = []
 
-    for insight in adset_insights:
+    for insight in ag_metrics:
         adset = (
             db.query(AdSet)
             .filter(AdSet.platform_adset_id == insight["entity_id"])
@@ -303,17 +399,19 @@ def sync_meta_account(db: Session, account: AdAccount) -> dict:
             if isinstance(insight["date"], str)
             else insight["date"]
         )
-        _upsert_metrics_row(db, adset.campaign_id, insight, insight_date, ad_set_id=adset.id)
+        _upsert_google_metrics(
+            db, adset.campaign_id, insight, insight_date, ad_set_id=adset.id,
+        )
         summary["metrics_synced"] += 1
 
-    # --- 6. Fetch and upsert ad-level metrics ---
+    # --- 8. Fetch and upsert ad-level metrics ---
     try:
-        ad_insights = fetch_ad_insights(meta_account_id, access_token)
+        ad_metrics_data = fetch_ad_metrics(customer_id)
     except Exception as e:
-        summary["errors"].append(f"Failed to fetch ad insights: {e}")
-        ad_insights = []
+        summary["errors"].append(f"Failed to fetch ad metrics: {e}")
+        ad_metrics_data = []
 
-    for insight in ad_insights:
+    for insight in ad_metrics_data:
         ad_obj = (
             db.query(Ad)
             .filter(Ad.platform_ad_id == insight["entity_id"])
@@ -327,7 +425,7 @@ def sync_meta_account(db: Session, account: AdAccount) -> dict:
             if isinstance(insight["date"], str)
             else insight["date"]
         )
-        _upsert_metrics_row(
+        _upsert_google_metrics(
             db, ad_obj.campaign_id, insight, insight_date,
             ad_set_id=ad_obj.ad_set_id, ad_id=ad_obj.id,
         )
@@ -335,57 +433,14 @@ def sync_meta_account(db: Session, account: AdAccount) -> dict:
 
     db.commit()
     logger.info(
-        "Meta sync complete for account %s: %d campaigns, %d ad sets, %d ads, %d metrics rows",
+        "Google sync complete for account %s: %d campaigns, %d ad groups, "
+        "%d ads, %d asset groups, %d assets, %d metrics rows",
         account.account_id,
         summary["campaigns_synced"],
         summary["adsets_synced"],
         summary["ads_synced"],
+        summary["asset_groups_synced"],
+        summary["assets_synced"],
         summary["metrics_synced"],
     )
     return summary
-
-
-def sync_all_platforms(db: Session) -> list[dict]:
-    """Sync all active ad accounts across all platforms.
-
-    Currently only Meta is implemented (Phase 1).
-    """
-    accounts = db.query(AdAccount).filter(AdAccount.is_active.is_(True)).all()
-    results = []
-
-    for account in accounts:
-        if account.platform == "meta":
-            result = sync_meta_account(db, account)
-            results.append({
-                "account_id": str(account.id),
-                "account_name": account.account_name,
-                "platform": account.platform,
-                **result,
-            })
-        elif account.platform == "google":
-            from app.services.google_sync_engine import sync_google_account
-            result = sync_google_account(db, account)
-            results.append({
-                "account_id": str(account.id),
-                "account_name": account.account_name,
-                "platform": account.platform,
-                **result,
-            })
-        # Phase 8: TikTok sync will be added here
-
-    # After sync: auto-classify creative verdicts
-    try:
-        auto_classify_all_combos(db)
-    except Exception:
-        logger.exception("Auto-classify combos failed after sync")
-
-    # After sync: evaluate automation rules
-    try:
-        rule_results = evaluate_all_rules(db)
-        total_actions = sum(r.get("actions_taken", 0) for r in rule_results)
-        if total_actions > 0:
-            logger.info("Rule evaluation complete: %d actions taken", total_actions)
-    except Exception:
-        logger.exception("Rule evaluation failed after sync")
-
-    return results

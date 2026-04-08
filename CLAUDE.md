@@ -46,7 +46,8 @@ country/TA analytics, AI creative suggestions, and Figma integration.
 
 ## Navigation Pages (17 routes)
 /, /country, /creative, /approvals, /angles, /keypoints, /ad-research, /rules,
-/logs, /insights, /budget, /suggestions, /figma, /accounts, /users, /login
+/logs, /insights, /budget, /accounts, /users, /login,
+/google, /google/pmax, /google/pmax/{id}, /google/search, /google/search/{id}
 
 New in Phase 6: /approvals, /approvals/{id}, /approvals/{id}/launch,
 /creative/{id}/submit, /users, /login
@@ -61,11 +62,11 @@ NOTE: /campaigns is REMOVED — do not recreate it
 - Migration: cd backend && alembic upgrade head
 
 ## Current Phase
-Phase 6: Combo Approval & Launch System
-Auth (JWT + bcrypt), multi-reviewer approval workflow, email + in-system
-notifications, Meta Ads launch (existing or auto-create campaign).
-5 new tables: users, combo_approvals, approval_reviewers, notifications,
-campaign_auto_configs. Migration: 005_approval_system.
+Phase 7: Google Ads Integration
+Google Ads API client (PMax + Search), sync engine, 2 new tables
+(google_asset_groups, google_assets), 9 new API endpoints,
+5 frontend pages (Google Dashboard, PMax list/detail, Search list/detail).
+Migration: 006_google_ads.
 
 ## Branches (6 total)
 5 hotels + 1 restaurant — each maps to one or more ad_accounts.

@@ -218,7 +218,7 @@ export default function SpyAdsPage() {
       body: JSON.stringify({ ...ad, country }),
     }).then(r => r.json()).then(d => {
       if (d.success) {
-        setSavedIds(prev => new Set([...prev, ad.ad_archive_id]))
+        setSavedIds(prev => new Set([...Array.from(prev), ad.ad_archive_id]))
         loadCollections()
       }
     }).catch(() => {})
@@ -280,7 +280,7 @@ export default function SpyAdsPage() {
 
   // ── Analysis functions ──
   const runAnalysis = () => {
-    const ids = [...selectedSavedIds]
+    const ids = Array.from(selectedSavedIds)
     if (ids.length === 0) return
     setIsAnalyzing(true)
     setStreamingText('')

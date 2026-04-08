@@ -11,6 +11,8 @@ from app.models.ai_conversation import AIConversation
 from app.models.spy_tracked_page import SpyTrackedPage
 from app.models.spy_saved_ad import SpySavedAd
 from app.models.spy_analysis_report import SpyAnalysisReport
+from app.models.google_asset_group import GoogleAssetGroup
+from app.models.google_asset import GoogleAsset
 
 __all__ = [
     "AdAccount",
@@ -20,6 +22,8 @@ __all__ = [
     "BudgetAllocation",
     "BudgetPlan",
     "Campaign",
+    "GoogleAssetGroup",
+    "GoogleAsset",
     "MetricsCache",
     "AutomationRule",
     "ActionLog",

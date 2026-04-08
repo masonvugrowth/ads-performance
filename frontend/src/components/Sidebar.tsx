@@ -26,6 +26,14 @@ const navSections = [
     ],
   },
   {
+    label: 'Google Ads',
+    items: [
+      { href: '/google', label: 'Google Dashboard' },
+      { href: '/google/pmax', label: 'PMax Campaigns' },
+      { href: '/google/search', label: 'Search Campaigns' },
+    ],
+  },
+  {
     label: 'Budget',
     items: [
       { href: '/budget', label: 'Budget Planner' },
@@ -115,7 +123,7 @@ export default function Sidebar() {
         ))}
       </nav>
       <div className="p-4 border-t border-gray-200">
-        <p className="text-xs text-gray-400">Phase 6 - Approvals</p>
+        <p className="text-xs text-gray-400">Phase 7 - Google Ads</p>
       </div>
     </aside>
   )

@@ -15,6 +15,7 @@ from app.routers import (
     country,
     creative,
     export,
+    google_campaigns,
     launch,
     notifications,
     rules,
@@ -57,6 +58,7 @@ app.include_router(users.router, prefix="/api", tags=["users"])
 app.include_router(approvals.router, prefix="/api", tags=["approvals"])
 app.include_router(launch.router, prefix="/api", tags=["launch"])
 app.include_router(notifications.router, prefix="/api", tags=["notifications"])
+app.include_router(google_campaigns.router, prefix="/api", tags=["google-ads"])
 
 
 @app.get("/health")

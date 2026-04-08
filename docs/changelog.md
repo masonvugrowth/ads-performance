@@ -1,5 +1,15 @@
 # Changelog
 
+## Phase 7 — Google Ads Integration
+- **Google Ads Client**: `google_client.py` using google-ads SDK — fetches campaigns, ad groups, RSA ads, PMax asset groups + assets, and multi-level metrics via GAQL
+- **Google Sync Engine**: `google_sync_engine.py` — full sync orchestrator for Google accounts, upserts into existing `campaigns`, `ad_sets`, `ads`, `metrics_cache` tables (platform="google")
+- **Migration 006**: 2 new tables — `google_asset_groups` (PMax), `google_assets` (individual creative assets with performance labels)
+- **API Endpoints**: 10 new endpoints — `/api/google/campaigns`, `/api/google/campaigns/{id}`, `/api/google/campaigns/{id}/ad-groups`, `/api/google/campaigns/{id}/metrics`, `/api/google/asset-groups`, `/api/google/asset-groups/{id}`, `/api/google/asset-groups/{id}/assets`, `/api/google/ads/{id}`, `/api/google/sync`, `/api/google/dashboard`
+- **Sync Integration**: Added Google branch to `sync_all_platforms()` in `sync_engine.py`
+- **Frontend Pages**: Google Dashboard (/google), PMax Campaigns (/google/pmax), PMax Detail (/google/pmax/{id}), Search Campaigns (/google/search), Search Detail (/google/search/{id})
+- **Navigation**: Added "Google Ads" section to sidebar (Dashboard, PMax, Search)
+- **Tests**: test_google_client.py (9 tests), test_google_router.py (7 tests)
+
 ## Phase 6 — Combo Approval & Launch System
 - **User Auth System**: JWT-based authentication with bcrypt password hashing, httpOnly cookies, role enforcement (admin/creator/reviewer)
 - **Migration 005**: 5 new tables — users, combo_approvals, approval_reviewers, notifications, campaign_auto_configs

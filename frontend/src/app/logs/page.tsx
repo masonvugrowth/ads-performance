@@ -206,7 +206,7 @@ export default function LogsPage() {
                           {log.action === 'evaluation_summary' ? (
                             log.metrics_snapshot?.actions_taken > 0 ? (
                               <span className="inline-flex items-center gap-1 text-xs text-green-600">
-                                <CheckCircle className="w-4 h-4" /> {log.metrics_snapshot.actions_taken} acted
+                                <CheckCircle className="w-4 h-4" /> {log.metrics_snapshot?.actions_taken} acted
                               </span>
                             ) : (
                               <span className="inline-flex items-center gap-1 text-xs text-gray-500">
