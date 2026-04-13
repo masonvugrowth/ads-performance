@@ -29,8 +29,10 @@ export default function PMaxPage() {
   const [assetGroups, setAssetGroups] = useState<AssetGroup[]>([])
   const [loading, setLoading] = useState(true)
   const [expandedCampaign, setExpandedCampaign] = useState<string | null>(null)
+  const [actionLoading, setActionLoading] = useState<string | null>(null)
 
-  useEffect(() => {
+  const fetchData = () => {
+    setLoading(true)
     Promise.all([
       fetch(`${API_BASE}/api/google/campaigns?campaign_type=PERFORMANCE_MAX&limit=100`, { credentials: 'include' }).then(r => r.json()),
       fetch(`${API_BASE}/api/google/asset-groups?limit=200`, { credentials: 'include' }).then(r => r.json()),
@@ -38,7 +40,27 @@ export default function PMaxPage() {
       if (campRes.success) setCampaigns(campRes.data.campaigns)
       if (agRes.success) setAssetGroups(agRes.data.asset_groups)
     }).finally(() => setLoading(false))
-  }, [])
+  }
+
+  useEffect(() => { fetchData() }, [])
+
+  const toggleCampaignStatus = async (c: Campaign, e: React.MouseEvent) => {
+    e.stopPropagation()
+    const action = c.status === 'ACTIVE' ? 'pause' : 'enable'
+    if (!confirm(`${action === 'pause' ? 'Pause' : 'Enable'} campaign "${c.name}"?`)) return
+    setActionLoading(c.id)
+    try {
+      const res = await fetch(`${API_BASE}/api/google/campaigns/${c.id}/${action}`, {
+        method: 'POST', credentials: 'include',
+      }).then(r => r.json())
+      if (res.success) {
+        setCampaigns(prev => prev.map(p => p.id === c.id ? { ...p, status: res.data.status } : p))
+      } else {
+        alert(res.error || 'Action failed')
+      }
+    } catch { alert('Network error') }
+    finally { setActionLoading(null) }
+  }
 
   const fmtCurrency = (n: number) => `$${n.toLocaleString('en-US', { maximumFractionDigits: 2 })}`
 
@@ -88,8 +110,19 @@ export default function PMaxPage() {
                     </div>
                   </div>
                   <div className="flex items-center gap-3">
+                    <button
+                      onClick={(e) => toggleCampaignStatus(c, e)}
+                      disabled={actionLoading === c.id}
+                      className={`text-xs px-3 py-1.5 rounded-lg font-medium transition-colors ${
+                        c.status === 'ACTIVE'
+                          ? 'bg-yellow-50 text-yellow-700 hover:bg-yellow-100'
+                          : 'bg-green-50 text-green-700 hover:bg-green-100'
+                      } ${actionLoading === c.id ? 'opacity-50' : ''}`}
+                    >
+                      {actionLoading === c.id ? '...' : c.status === 'ACTIVE' ? 'Pause' : 'Enable'}
+                    </button>
                     <span className="text-sm text-gray-500">{groups.length} asset groups</span>
-                    <span className="text-gray-400">{isExpanded ? '▲' : '▼'}</span>
+                    <span className="text-gray-400">{isExpanded ? '\u25B2' : '\u25BC'}</span>
                   </div>
                 </button>
 

@@ -32,6 +32,11 @@ celery_app.conf.beat_schedule = {
         "task": "app.tasks.sync_tasks.daily_rule_cycle_task",
         "schedule": crontab(hour=0, minute=5),
     },
+    # Daily at 02:00 UTC (10:00 Asia/Taipei): sync PMS reservations and run booking matching
+    "sync-reservations-and-match": {
+        "task": "app.tasks.sync_tasks.sync_reservations_and_match_task",
+        "schedule": crontab(hour=2, minute=0),
+    },
 }
 
 # Auto-discover tasks

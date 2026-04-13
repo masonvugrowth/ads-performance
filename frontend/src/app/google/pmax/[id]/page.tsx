@@ -56,6 +56,9 @@ export default function PMaxDetail() {
   const [assetGroups, setAssetGroups] = useState<AssetGroup[]>([])
   const [metrics, setMetrics] = useState<MetricRow[]>([])
   const [loading, setLoading] = useState(true)
+  const [actionLoading, setActionLoading] = useState(false)
+  const [editingBudget, setEditingBudget] = useState(false)
+  const [budgetValue, setBudgetValue] = useState('')
 
   useEffect(() => {
     Promise.all([
@@ -66,7 +69,6 @@ export default function PMaxDetail() {
       if (campRes.success) setCampaign(campRes.data)
       if (metRes.success) setMetrics(metRes.data.metrics)
 
-      // Fetch assets for each asset group
       if (agRes.success) {
         const groups: AssetGroup[] = []
         for (const g of agRes.data.asset_groups) {
@@ -80,30 +82,90 @@ export default function PMaxDetail() {
     }).finally(() => setLoading(false))
   }, [id])
 
+  const toggleStatus = async () => {
+    if (!campaign) return
+    const action = campaign.status === 'ACTIVE' ? 'pause' : 'enable'
+    if (!confirm(`${action === 'pause' ? 'Pause' : 'Enable'} campaign "${campaign.name}"?`)) return
+    setActionLoading(true)
+    try {
+      const res = await fetch(`${API_BASE}/api/google/campaigns/${id}/${action}`, {
+        method: 'POST', credentials: 'include',
+      }).then(r => r.json())
+      if (res.success) setCampaign(prev => prev ? { ...prev, status: res.data.status } : prev)
+      else alert(res.error || 'Action failed')
+    } catch { alert('Network error') }
+    finally { setActionLoading(false) }
+  }
+
+  const saveBudget = async () => {
+    const val = parseFloat(budgetValue)
+    if (!val || val <= 0) { alert('Enter a valid budget'); return }
+    setActionLoading(true)
+    try {
+      const res = await fetch(`${API_BASE}/api/google/campaigns/${id}/budget`, {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ daily_budget: val }),
+      }).then(r => r.json())
+      if (res.success) {
+        setCampaign(prev => prev ? { ...prev, daily_budget: res.data.daily_budget } : prev)
+        setEditingBudget(false)
+      } else alert(res.error || 'Failed to update budget')
+    } catch { alert('Network error') }
+    finally { setActionLoading(false) }
+  }
+
   const fmt = (n: number) => n.toLocaleString('en-US', { maximumFractionDigits: 2 })
 
   if (loading) return <div className="p-8 text-gray-500">Loading campaign detail...</div>
   if (!campaign) return <div className="p-8 text-red-500">Campaign not found</div>
 
-  // Aggregate metrics
   const totalSpend = metrics.reduce((s, m) => s + m.spend, 0)
   const totalRevenue = metrics.reduce((s, m) => s + m.revenue, 0)
   const totalConversions = metrics.reduce((s, m) => s + m.conversions, 0)
 
   return (
     <div className="p-8 space-y-6">
-      <div className="flex items-center gap-3">
-        <Link href="/google/pmax" className="text-gray-400 hover:text-gray-600">&larr;</Link>
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">{campaign.name}</h1>
-          <div className="flex items-center gap-3 mt-1">
-            <span className="text-xs bg-blue-50 text-blue-700 px-2 py-0.5 rounded-full font-medium">PERFORMANCE MAX</span>
-            <span className={`text-xs font-medium ${campaign.status === 'ACTIVE' ? 'text-green-600' : 'text-gray-400'}`}>
-              {campaign.status}
-            </span>
-            {campaign.daily_budget && <span className="text-xs text-gray-500">${fmt(campaign.daily_budget)}/day</span>}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <Link href="/google/pmax" className="text-gray-400 hover:text-gray-600">&larr;</Link>
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900">{campaign.name}</h1>
+            <div className="flex items-center gap-3 mt-1">
+              <span className="text-xs bg-blue-50 text-blue-700 px-2 py-0.5 rounded-full font-medium">PERFORMANCE MAX</span>
+              <span className={`text-xs font-medium ${campaign.status === 'ACTIVE' ? 'text-green-600' : 'text-gray-400'}`}>
+                {campaign.status}
+              </span>
+              {!editingBudget && campaign.daily_budget && (
+                <button onClick={() => { setEditingBudget(true); setBudgetValue(String(campaign.daily_budget)) }}
+                  className="text-xs text-gray-500 hover:text-blue-600 cursor-pointer">
+                  ${fmt(campaign.daily_budget)}/day
+                </button>
+              )}
+              {editingBudget && (
+                <div className="flex items-center gap-1">
+                  <span className="text-xs text-gray-500">$</span>
+                  <input type="number" value={budgetValue} onChange={e => setBudgetValue(e.target.value)}
+                    className="w-24 text-xs border rounded px-2 py-1" autoFocus />
+                  <button onClick={saveBudget} disabled={actionLoading}
+                    className="text-xs bg-blue-600 text-white px-2 py-1 rounded hover:bg-blue-700 disabled:opacity-50">Save</button>
+                  <button onClick={() => setEditingBudget(false)} className="text-xs text-gray-400 hover:text-gray-600">Cancel</button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
+        <button
+          onClick={toggleStatus}
+          disabled={actionLoading}
+          className={`text-sm px-4 py-2 rounded-lg font-medium transition-colors ${
+            campaign.status === 'ACTIVE'
+              ? 'bg-yellow-50 text-yellow-700 hover:bg-yellow-100 border border-yellow-200'
+              : 'bg-green-50 text-green-700 hover:bg-green-100 border border-green-200'
+          } ${actionLoading ? 'opacity-50' : ''}`}
+        >
+          {actionLoading ? '...' : campaign.status === 'ACTIVE' ? 'Pause Campaign' : 'Enable Campaign'}
+        </button>
       </div>
 
       {/* KPI Summary */}

@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useEffect, useState } from 'react'
+import React, { Suspense, useEffect, useState } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import { CheckCircle, XCircle, ChevronDown, ChevronUp, ArrowLeft, X } from 'lucide-react'
 
@@ -51,6 +51,14 @@ const ACTION_LABELS: Record<string, string> = {
 }
 
 export default function LogsPage() {
+  return (
+    <Suspense fallback={<div className="p-8 text-gray-500">Loading logs...</div>}>
+      <LogsContent />
+    </Suspense>
+  )
+}
+
+function LogsContent() {
   const searchParams = useSearchParams()
   const router = useRouter()
 

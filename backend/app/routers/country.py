@@ -38,6 +38,8 @@ def _default_date_range():
 
 def _apply_common_filters(q, country, platform, date_from, date_to, funnel_stage, account_id):
     """Apply common filters to a metrics query (already joined with Campaign + AdSet)."""
+    # Only adset-level rows — exclude ad-level to prevent double counting
+    q = q.filter(MetricsCache.ad_id.is_(None))
     if country:
         q = q.filter(AdSet.country == country.upper())
     if platform:
@@ -190,6 +192,7 @@ def ta_breakdown(
                 )
                 .join(Campaign, Campaign.id == MetricsCache.campaign_id)
                 .join(AdSet, AdSet.id == MetricsCache.ad_set_id)
+                .filter(MetricsCache.ad_id.is_(None))
                 .filter(AdSet.country == country.upper())
                 .filter(MetricsCache.date >= d_from, MetricsCache.date <= d_to)
             )
@@ -280,6 +283,7 @@ def country_funnel(
                 )
                 .join(Campaign, Campaign.id == MetricsCache.campaign_id)
                 .join(AdSet, AdSet.id == MetricsCache.ad_set_id)
+                .filter(MetricsCache.ad_id.is_(None))
                 .filter(AdSet.country == country.upper())
                 .filter(MetricsCache.date >= d_from, MetricsCache.date <= d_to)
             )

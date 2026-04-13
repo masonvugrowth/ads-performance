@@ -53,9 +53,17 @@ def _get_client() -> GoogleAdsClient:
     return GoogleAdsClient.load_from_dict(credentials)
 
 
+def _enum_name(enum_val: Any) -> str:
+    """Get the string name from a Google Ads proto-plus enum value."""
+    if hasattr(enum_val, 'name'):
+        return enum_val.name
+    name = str(enum_val).split(".")[-1]
+    return name
+
+
 def _normalize_status(status_enum: Any) -> str:
     """Convert Google Ads status enum to internal convention."""
-    name = str(status_enum).split(".")[-1] if not isinstance(status_enum, str) else status_enum
+    name = _enum_name(status_enum)
     return _STATUS_MAP.get(name, name)
 
 
@@ -91,9 +99,7 @@ def fetch_campaigns(customer_id: str) -> list[dict]:
             campaign.name,
             campaign.status,
             campaign.advertising_channel_type,
-            campaign_budget.amount_micros,
-            campaign.start_date,
-            campaign.end_date
+            campaign_budget.amount_micros
         FROM campaign
         WHERE campaign.status != 'REMOVED'
     """
@@ -103,7 +109,7 @@ def fetch_campaigns(customer_id: str) -> list[dict]:
         results = []
         for row in rows:
             c = row.campaign
-            campaign_type = str(c.advertising_channel_type).split(".")[-1]
+            campaign_type = _enum_name(c.advertising_channel_type)
             results.append({
                 "platform_campaign_id": str(c.id),
                 "name": c.name,
@@ -113,8 +119,8 @@ def fetch_campaigns(customer_id: str) -> list[dict]:
                     row.campaign_budget.amount_micros if row.campaign_budget else None
                 ),
                 "lifetime_budget": None,  # Google uses daily budgets
-                "start_date": c.start_date if c.start_date else None,
-                "end_date": c.end_date if c.end_date else None,
+                "start_date": None,
+                "end_date": None,
                 "raw_data": {
                     "campaign_id": str(c.id),
                     "campaign_type": campaign_type,
@@ -203,7 +209,7 @@ def fetch_ads(customer_id: str) -> list[dict]:
             headlines = [h.text for h in rsa.headlines] if rsa and rsa.headlines else []
             descriptions = [d.text for d in rsa.descriptions] if rsa and rsa.descriptions else []
 
-            ad_type = str(ad.type_).split(".")[-1] if ad.type_ else "UNKNOWN"
+            ad_type = _enum_name(ad.type_) if ad.type_ else "UNKNOWN"
 
             results.append({
                 "platform_ad_id": str(ad.id),
@@ -279,7 +285,6 @@ def fetch_asset_group_assets(customer_id: str) -> list[dict]:
             asset_group_asset.asset,
             asset_group_asset.asset_group,
             asset_group_asset.field_type,
-            asset_group_asset.performance_label,
             asset.id,
             asset.name,
             asset.text_asset.text,
@@ -296,12 +301,10 @@ def fetch_asset_group_assets(customer_id: str) -> list[dict]:
             asset = row.asset
             aga = row.asset_group_asset
 
-            field_type = str(aga.field_type).split(".")[-1]
+            field_type = _enum_name(aga.field_type)
             asset_type = _FIELD_TYPE_MAP.get(field_type, field_type)
 
-            perf_label = str(aga.performance_label).split(".")[-1] if aga.performance_label else None
-            if perf_label == "UNSPECIFIED":
-                perf_label = None
+            perf_label = None
 
             # Determine content based on type
             text_content = None
@@ -515,4 +518,82 @@ def fetch_ad_metrics(
         raise
     except Exception:
         logger.exception("Failed to fetch ad metrics from Google account %s", customer_id)
+        raise
+
+
+# Conversion action name patterns → metrics_cache column
+_CONVERSION_ACTION_MAP = {
+    "add_to_cart": "add_to_cart",
+    "begin_checkout": "checkouts",
+    "checkout": "checkouts",
+    "purchase": "conversions",  # fallback — already counted in main metrics
+    "lead": "leads",
+    "website visits": "landing_page_views",
+    "website_visit": "landing_page_views",
+}
+
+
+def _match_conversion_column(action_name: str) -> str | None:
+    """Map a GA4 conversion action name to the metrics_cache column."""
+    name_lower = action_name.lower()
+    for pattern, column in _CONVERSION_ACTION_MAP.items():
+        if pattern in name_lower:
+            return column
+    return None
+
+
+def fetch_conversion_action_metrics(
+    customer_id: str,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> list[dict]:
+    """Fetch daily campaign-level conversion metrics segmented by conversion action.
+
+    Returns list of dicts with campaign_id, date, conversion_action_name,
+    conversions count, and the mapped column name.
+    """
+    customer_id = customer_id.replace("-", "")
+    client = _get_client()
+
+    if date_from is None:
+        date_from = date.today() - timedelta(days=7)
+    if date_to is None:
+        date_to = date.today()
+
+    query = f"""
+        SELECT
+            campaign.id,
+            segments.date,
+            segments.conversion_action_name,
+            metrics.all_conversions
+        FROM campaign
+        WHERE segments.date BETWEEN '{date_from.isoformat()}' AND '{date_to.isoformat()}'
+            AND campaign.status != 'REMOVED'
+            AND metrics.all_conversions > 0
+    """
+
+    try:
+        rows = _search_stream(client, customer_id, query)
+        results = []
+        for row in rows:
+            action_name = row.segments.conversion_action_name
+            column = _match_conversion_column(action_name)
+            if column and column != "conversions":  # skip purchase — already in main metrics
+                results.append({
+                    "campaign_id": str(row.campaign.id),
+                    "date": row.segments.date,
+                    "conversion_action_name": action_name,
+                    "column": column,
+                    "value": int(row.metrics.all_conversions or 0),
+                })
+        logger.info(
+            "Fetched %d conversion action metric rows from Google account %s",
+            len(results), customer_id,
+        )
+        return results
+    except GoogleAdsException as ex:
+        logger.exception("Google Ads API error fetching conversion actions: %s", ex.failure)
+        raise
+    except Exception:
+        logger.exception("Failed to fetch conversion action metrics from Google account %s", customer_id)
         raise

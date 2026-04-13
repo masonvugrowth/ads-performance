@@ -15,6 +15,12 @@ from app.models import (  # noqa: F401
     Campaign,
     MetricsCache,
 )
+from app.models.ad_material import AdMaterial  # noqa: F401
+from app.models.ad_angle import AdAngle  # noqa: F401
+from app.models.ad_copy import AdCopy  # noqa: F401
+from app.models.ad_combo import AdCombo  # noqa: F401
+from app.models.keypoint import BranchKeypoint  # noqa: F401
+from app.models.video_transcript import VideoTranscript  # noqa: F401
 
 config = context.config
 

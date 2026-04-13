@@ -10,6 +10,7 @@ from app.routers import (
     ai,
     approvals,
     auth,
+    booking_matches,
     budget,
     campaigns,
     country,
@@ -20,6 +21,7 @@ from app.routers import (
     notifications,
     rules,
     sync,
+    transcriptions,
     users,
 )
 
@@ -59,6 +61,8 @@ app.include_router(approvals.router, prefix="/api", tags=["approvals"])
 app.include_router(launch.router, prefix="/api", tags=["launch"])
 app.include_router(notifications.router, prefix="/api", tags=["notifications"])
 app.include_router(google_campaigns.router, prefix="/api", tags=["google-ads"])
+app.include_router(transcriptions.router, prefix="/api", tags=["transcriptions"])
+app.include_router(booking_matches.router, prefix="/api", tags=["booking-matches"])
 
 
 @app.get("/health")

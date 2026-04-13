@@ -6,11 +6,12 @@ and a manual Google-only sync trigger.
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Body, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.account import AdAccount
+from app.models.action_log import ActionLog
 from app.models.ad import Ad
 from app.models.ad_set import AdSet
 from app.models.campaign import Campaign
@@ -439,4 +440,288 @@ def google_dashboard(
             },
         })
     except Exception as e:
+        return _err(str(e), 500)
+
+
+# ── Ad Group Ads ───────────────────────────────────────────
+
+
+@router.get("/google/ad-groups/{ad_group_id}/ads")
+def list_ad_group_ads(ad_group_id: str, db: Session = Depends(get_db)):
+    """List RSA ads for a Google ad group."""
+    try:
+        ads = (
+            db.query(Ad)
+            .filter(Ad.ad_set_id == ad_group_id, Ad.platform == "google")
+            .order_by(Ad.name)
+            .all()
+        )
+        return _ok({
+            "ads": [
+                {
+                    "id": a.id,
+                    "name": a.name,
+                    "status": a.status,
+                    "ad_type": (a.raw_data or {}).get("ad_type", "UNKNOWN"),
+                    "headlines": (a.raw_data or {}).get("headlines", []),
+                    "descriptions": (a.raw_data or {}).get("descriptions", []),
+                }
+                for a in ads
+            ],
+            "total": len(ads),
+        })
+    except Exception as e:
+        return _err(str(e), 500)
+
+
+# ── Write Operations ───────────────────────────────────────
+
+
+def _get_google_customer_id(db: Session, account_id: str) -> str:
+    """Get the Google Ads customer ID for an account."""
+    account = db.query(AdAccount).filter(AdAccount.id == account_id).first()
+    if not account:
+        raise ValueError("Account not found")
+    return account.account_id.replace("-", "")
+
+
+def _log_action(
+    db: Session,
+    action: str,
+    campaign_id: str | None = None,
+    ad_set_id: str | None = None,
+    ad_id: str | None = None,
+    success: bool = True,
+    error_message: str | None = None,
+    action_params: dict | None = None,
+) -> None:
+    """Create immutable action log entry for manual Google actions."""
+    log = ActionLog(
+        rule_id=None,
+        campaign_id=campaign_id,
+        ad_set_id=ad_set_id,
+        ad_id=ad_id,
+        platform="google",
+        action=action,
+        action_params=action_params,
+        triggered_by="manual",
+        metrics_snapshot=None,
+        success=success,
+        error_message=error_message,
+        executed_at=datetime.now(timezone.utc),
+    )
+    db.add(log)
+
+
+@router.post("/google/campaigns/{campaign_id}/pause")
+def pause_google_campaign(campaign_id: str, db: Session = Depends(get_db)):
+    """Pause a Google Ads campaign."""
+    try:
+        from app.services.google_actions import pause_campaign
+
+        campaign = (
+            db.query(Campaign)
+            .filter(Campaign.id == campaign_id, Campaign.platform == "google")
+            .first()
+        )
+        if not campaign:
+            return _err("Campaign not found", 404)
+
+        customer_id = _get_google_customer_id(db, campaign.account_id)
+        pause_campaign(customer_id, campaign.platform_campaign_id)
+        campaign.status = "PAUSED"
+        campaign.updated_at = datetime.now(timezone.utc)
+        _log_action(db, "pause_campaign", campaign_id=campaign.id)
+        db.commit()
+        return _ok({"id": campaign.id, "status": "PAUSED"})
+    except Exception as e:
+        _log_action(db, "pause_campaign", campaign_id=campaign_id, success=False, error_message=str(e))
+        db.commit()
+        return _err(str(e), 500)
+
+
+@router.post("/google/campaigns/{campaign_id}/enable")
+def enable_google_campaign(campaign_id: str, db: Session = Depends(get_db)):
+    """Enable a Google Ads campaign."""
+    try:
+        from app.services.google_actions import enable_campaign
+
+        campaign = (
+            db.query(Campaign)
+            .filter(Campaign.id == campaign_id, Campaign.platform == "google")
+            .first()
+        )
+        if not campaign:
+            return _err("Campaign not found", 404)
+
+        customer_id = _get_google_customer_id(db, campaign.account_id)
+        enable_campaign(customer_id, campaign.platform_campaign_id)
+        campaign.status = "ACTIVE"
+        campaign.updated_at = datetime.now(timezone.utc)
+        _log_action(db, "enable_campaign", campaign_id=campaign.id)
+        db.commit()
+        return _ok({"id": campaign.id, "status": "ACTIVE"})
+    except Exception as e:
+        _log_action(db, "enable_campaign", campaign_id=campaign_id, success=False, error_message=str(e))
+        db.commit()
+        return _err(str(e), 500)
+
+
+@router.post("/google/campaigns/{campaign_id}/budget")
+def update_google_campaign_budget(
+    campaign_id: str,
+    body: dict = Body(...),
+    db: Session = Depends(get_db),
+):
+    """Update a Google Ads campaign's daily budget."""
+    try:
+        from app.services.google_actions import update_campaign_budget
+
+        daily_budget = body.get("daily_budget")
+        if daily_budget is None or daily_budget <= 0:
+            return _err("daily_budget must be a positive number")
+
+        campaign = (
+            db.query(Campaign)
+            .filter(Campaign.id == campaign_id, Campaign.platform == "google")
+            .first()
+        )
+        if not campaign:
+            return _err("Campaign not found", 404)
+
+        customer_id = _get_google_customer_id(db, campaign.account_id)
+        new_budget_micros = int(daily_budget * 1_000_000)
+        update_campaign_budget(customer_id, campaign.platform_campaign_id, new_budget_micros)
+
+        old_budget = float(campaign.daily_budget) if campaign.daily_budget else 0
+        campaign.daily_budget = daily_budget
+        campaign.updated_at = datetime.now(timezone.utc)
+        _log_action(
+            db, "adjust_budget", campaign_id=campaign.id,
+            action_params={"old_budget": old_budget, "new_budget": daily_budget},
+        )
+        db.commit()
+        return _ok({"id": campaign.id, "daily_budget": daily_budget})
+    except Exception as e:
+        _log_action(
+            db, "adjust_budget", campaign_id=campaign_id,
+            success=False, error_message=str(e),
+        )
+        db.commit()
+        return _err(str(e), 500)
+
+
+@router.post("/google/ad-groups/{ad_group_id}/pause")
+def pause_google_ad_group(ad_group_id: str, db: Session = Depends(get_db)):
+    """Pause a Google Ads ad group."""
+    try:
+        from app.services.google_actions import pause_ad_group
+
+        adset = (
+            db.query(AdSet)
+            .filter(AdSet.id == ad_group_id, AdSet.platform == "google")
+            .first()
+        )
+        if not adset:
+            return _err("Ad group not found", 404)
+
+        customer_id = _get_google_customer_id(db, adset.account_id)
+        pause_ad_group(customer_id, adset.platform_adset_id)
+        adset.status = "PAUSED"
+        adset.updated_at = datetime.now(timezone.utc)
+        _log_action(db, "pause_adset", campaign_id=adset.campaign_id, ad_set_id=adset.id)
+        db.commit()
+        return _ok({"id": adset.id, "status": "PAUSED"})
+    except Exception as e:
+        _log_action(db, "pause_adset", ad_set_id=ad_group_id, success=False, error_message=str(e))
+        db.commit()
+        return _err(str(e), 500)
+
+
+@router.post("/google/ad-groups/{ad_group_id}/enable")
+def enable_google_ad_group(ad_group_id: str, db: Session = Depends(get_db)):
+    """Enable a Google Ads ad group."""
+    try:
+        from app.services.google_actions import enable_ad_group
+
+        adset = (
+            db.query(AdSet)
+            .filter(AdSet.id == ad_group_id, AdSet.platform == "google")
+            .first()
+        )
+        if not adset:
+            return _err("Ad group not found", 404)
+
+        customer_id = _get_google_customer_id(db, adset.account_id)
+        enable_ad_group(customer_id, adset.platform_adset_id)
+        adset.status = "ACTIVE"
+        adset.updated_at = datetime.now(timezone.utc)
+        _log_action(db, "enable_adset", campaign_id=adset.campaign_id, ad_set_id=adset.id)
+        db.commit()
+        return _ok({"id": adset.id, "status": "ACTIVE"})
+    except Exception as e:
+        _log_action(db, "enable_adset", ad_set_id=ad_group_id, success=False, error_message=str(e))
+        db.commit()
+        return _err(str(e), 500)
+
+
+@router.post("/google/ads/{ad_id}/pause")
+def pause_google_ad(ad_id: str, db: Session = Depends(get_db)):
+    """Pause a Google Ads ad."""
+    try:
+        from app.services.google_actions import pause_ad
+
+        ad = (
+            db.query(Ad)
+            .filter(Ad.id == ad_id, Ad.platform == "google")
+            .first()
+        )
+        if not ad:
+            return _err("Ad not found", 404)
+
+        adset = db.query(AdSet).filter(AdSet.id == ad.ad_set_id).first()
+        if not adset:
+            return _err("Ad group not found for ad", 404)
+
+        customer_id = _get_google_customer_id(db, ad.account_id)
+        pause_ad(customer_id, adset.platform_adset_id, ad.platform_ad_id)
+        ad.status = "PAUSED"
+        ad.updated_at = datetime.now(timezone.utc)
+        _log_action(db, "pause_ad", campaign_id=ad.campaign_id, ad_set_id=ad.ad_set_id, ad_id=ad.id)
+        db.commit()
+        return _ok({"id": ad.id, "status": "PAUSED"})
+    except Exception as e:
+        _log_action(db, "pause_ad", ad_id=ad_id, success=False, error_message=str(e))
+        db.commit()
+        return _err(str(e), 500)
+
+
+@router.post("/google/ads/{ad_id}/enable")
+def enable_google_ad(ad_id: str, db: Session = Depends(get_db)):
+    """Enable a Google Ads ad."""
+    try:
+        from app.services.google_actions import enable_ad
+
+        ad = (
+            db.query(Ad)
+            .filter(Ad.id == ad_id, Ad.platform == "google")
+            .first()
+        )
+        if not ad:
+            return _err("Ad not found", 404)
+
+        adset = db.query(AdSet).filter(AdSet.id == ad.ad_set_id).first()
+        if not adset:
+            return _err("Ad group not found for ad", 404)
+
+        customer_id = _get_google_customer_id(db, ad.account_id)
+        enable_ad(customer_id, adset.platform_adset_id, ad.platform_ad_id)
+        ad.status = "ACTIVE"
+        ad.updated_at = datetime.now(timezone.utc)
+        _log_action(db, "enable_ad", campaign_id=ad.campaign_id, ad_set_id=ad.ad_set_id, ad_id=ad.id)
+        db.commit()
+        return _ok({"id": ad.id, "status": "ACTIVE"})
+    except Exception as e:
+        _log_action(db, "enable_ad", ad_id=ad_id, success=False, error_message=str(e))
+        db.commit()
         return _err(str(e), 500)

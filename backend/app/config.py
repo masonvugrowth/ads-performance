@@ -69,8 +69,16 @@ class Settings(BaseSettings):
     FIGMA_ACCESS_TOKEN: str = ""
     FIGMA_TEAM_ID: str = ""
 
+    # PMS (Reservation system)
+    PMS_API_BASE_URL: str = "https://hid-dashboard-production.up.railway.app"
+    PMS_API_KEY: str = ""
+
     # Export API
     EXPORT_API_RATE_LIMIT_DAILY: int = 1000
+
+    # yt-dlp (video transcription)
+    YTDLP_COOKIES_FROM_BROWSER: str = ""  # e.g. "chrome", "firefox" — local dev
+    YTDLP_COOKIES_FILE: str = ""  # path to cookies.txt — for deployment
 
     # Sync
     SYNC_INTERVAL_MINUTES: int = 15

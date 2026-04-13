@@ -1,0 +1,31 @@
+from sqlalchemy import Column, Date, DateTime, ForeignKey, Integer, Numeric, String
+
+from app.models.base import Base, TimestampMixin, UUIDType
+
+
+class BookingMatch(TimestampMixin, Base):
+    __tablename__ = "booking_matches"
+
+    match_date = Column(Date, nullable=False, index=True)
+    ads_revenue = Column(Numeric(15, 2), nullable=False)
+    ads_bookings = Column(Integer, nullable=False, default=1)
+    ads_country = Column(String(100), nullable=True)
+    ads_channel = Column(String(20), nullable=True)
+    campaign_name = Column(String(500), nullable=True)
+    campaign_id = Column(
+        UUIDType,
+        ForeignKey("campaigns.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    reservation_ids = Column(String(1000), nullable=True)
+    reservation_numbers = Column(String(1000), nullable=True)
+    guest_names = Column(String(1000), nullable=True)
+    guest_emails = Column(String(1000), nullable=True)
+    reservation_statuses = Column(String(500), nullable=True)
+    room_types = Column(String(1000), nullable=True)
+    reservation_sources = Column(String(500), nullable=True)
+    matched_country = Column(String(200), nullable=True)
+    branch = Column(String(100), nullable=True, index=True)
+    match_result = Column(String(50), nullable=False, index=True)
+    matched_at = Column(DateTime(timezone=True), nullable=False)

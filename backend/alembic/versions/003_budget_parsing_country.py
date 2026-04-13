@@ -11,7 +11,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "003_budget_parsing_country"
-down_revision: Union[str, None] = "002_ad_sets_and_ads"
+down_revision: Union[str, None] = "002b_creative_library"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -39,7 +39,7 @@ def upgrade() -> None:
         sa.Column("total_budget", sa.Numeric(15, 2), nullable=False),
         sa.Column("currency", sa.String(3), nullable=False, server_default="VND"),
         sa.Column("notes", sa.Text(), nullable=True),
-        sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.text("1")),
+        sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.text("true")),
         sa.Column("created_by", sa.String(100), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
@@ -76,7 +76,7 @@ def upgrade() -> None:
         sa.Column("name", sa.String(200), nullable=False),
         sa.Column("key_hash", sa.String(64), nullable=False),
         sa.Column("key_prefix", sa.String(8), nullable=False),
-        sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.text("1")),
+        sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.text("true")),
         sa.Column("last_used_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("daily_request_count", sa.Integer(), nullable=False, server_default=sa.text("0")),
         sa.Column("daily_count_reset_at", sa.Date(), nullable=True),

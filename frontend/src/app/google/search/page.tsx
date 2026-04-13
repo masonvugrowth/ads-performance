@@ -17,6 +17,7 @@ interface Campaign {
 export default function SearchCampaignsPage() {
   const [campaigns, setCampaigns] = useState<Campaign[]>([])
   const [loading, setLoading] = useState(true)
+  const [actionLoading, setActionLoading] = useState<string | null>(null)
 
   useEffect(() => {
     fetch(`${API_BASE}/api/google/campaigns?campaign_type=SEARCH&limit=100`, { credentials: 'include' })
@@ -26,6 +27,23 @@ export default function SearchCampaignsPage() {
       })
       .finally(() => setLoading(false))
   }, [])
+
+  const toggleCampaignStatus = async (c: Campaign) => {
+    const action = c.status === 'ACTIVE' ? 'pause' : 'enable'
+    if (!confirm(`${action === 'pause' ? 'Pause' : 'Enable'} campaign "${c.name}"?`)) return
+    setActionLoading(c.id)
+    try {
+      const res = await fetch(`${API_BASE}/api/google/campaigns/${c.id}/${action}`, {
+        method: 'POST', credentials: 'include',
+      }).then(r => r.json())
+      if (res.success) {
+        setCampaigns(prev => prev.map(p => p.id === c.id ? { ...p, status: res.data.status } : p))
+      } else {
+        alert(res.error || 'Action failed')
+      }
+    } catch { alert('Network error') }
+    finally { setActionLoading(null) }
+  }
 
   const fmtCurrency = (n: number) => `$${n.toLocaleString('en-US', { maximumFractionDigits: 2 })}`
 
@@ -51,12 +69,13 @@ export default function SearchCampaignsPage() {
                 <th className="text-left px-5 py-3 text-gray-500 font-medium">Budget</th>
                 <th className="text-left px-5 py-3 text-gray-500 font-medium">TA</th>
                 <th className="text-left px-5 py-3 text-gray-500 font-medium">Funnel</th>
+                <th className="text-center px-5 py-3 text-gray-500 font-medium">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {campaigns.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="px-5 py-10 text-center text-gray-400">
+                  <td colSpan={6} className="px-5 py-10 text-center text-gray-400">
                     No Search campaigns found
                   </td>
                 </tr>
@@ -76,6 +95,19 @@ export default function SearchCampaignsPage() {
                     <td className="px-5 py-3 text-gray-600">{c.daily_budget ? fmtCurrency(c.daily_budget) : '-'}</td>
                     <td className="px-5 py-3 text-gray-600">{c.ta || '-'}</td>
                     <td className="px-5 py-3 text-gray-600">{c.funnel_stage || '-'}</td>
+                    <td className="px-5 py-3 text-center">
+                      <button
+                        onClick={() => toggleCampaignStatus(c)}
+                        disabled={actionLoading === c.id}
+                        className={`text-xs px-3 py-1.5 rounded-lg font-medium transition-colors ${
+                          c.status === 'ACTIVE'
+                            ? 'bg-yellow-50 text-yellow-700 hover:bg-yellow-100'
+                            : 'bg-green-50 text-green-700 hover:bg-green-100'
+                        } ${actionLoading === c.id ? 'opacity-50' : ''}`}
+                      >
+                        {actionLoading === c.id ? '...' : c.status === 'ACTIVE' ? 'Pause' : 'Enable'}
+                      </button>
+                    </td>
                   </tr>
                 ))
               )}

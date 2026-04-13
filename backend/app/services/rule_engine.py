@@ -14,6 +14,7 @@ from app.models.ad_set import AdSet
 from app.models.campaign import Campaign
 from app.models.metrics import MetricsCache
 from app.models.rule import AutomationRule
+from app.services import google_actions as google_act
 from app.services.meta_actions import (
     enable_ad,
     enable_ad_set,
@@ -340,66 +341,110 @@ def execute_action(
     error_message = None
     action = rule.action
 
+    is_google = getattr(entity, "platform", None) == "google"
+    customer_id = account.account_id.replace("-", "") if account and is_google else None
+
     try:
         if action == "send_alert":
             success = True
             logger.info("Alert: Rule '%s' triggered for %s '%s'", rule.name, entity_level, entity.name)
 
         elif action == "pause_campaign":
-            if not access_token:
-                raise ValueError("No access token for account")
-            pause_campaign(access_token, entity.platform_campaign_id)
+            if is_google:
+                if not customer_id:
+                    raise ValueError("No customer_id for Google account")
+                google_act.pause_campaign(customer_id, entity.platform_campaign_id)
+            else:
+                if not access_token:
+                    raise ValueError("No access token for account")
+                pause_campaign(access_token, entity.platform_campaign_id)
             entity.status = "PAUSED"
             success = True
 
         elif action == "enable_campaign":
-            if not access_token:
-                raise ValueError("No access token for account")
-            enable_campaign(access_token, entity.platform_campaign_id)
+            if is_google:
+                if not customer_id:
+                    raise ValueError("No customer_id for Google account")
+                google_act.enable_campaign(customer_id, entity.platform_campaign_id)
+            else:
+                if not access_token:
+                    raise ValueError("No access token for account")
+                enable_campaign(access_token, entity.platform_campaign_id)
             entity.status = "ACTIVE"
             success = True
 
         elif action == "pause_adset":
-            if not access_token:
-                raise ValueError("No access token for account")
-            pause_ad_set(access_token, entity.platform_adset_id)
+            if is_google:
+                if not customer_id:
+                    raise ValueError("No customer_id for Google account")
+                google_act.pause_ad_group(customer_id, entity.platform_adset_id)
+            else:
+                if not access_token:
+                    raise ValueError("No access token for account")
+                pause_ad_set(access_token, entity.platform_adset_id)
             entity.status = "PAUSED"
             success = True
 
         elif action == "enable_adset":
-            if not access_token:
-                raise ValueError("No access token for account")
-            enable_ad_set(access_token, entity.platform_adset_id)
+            if is_google:
+                if not customer_id:
+                    raise ValueError("No customer_id for Google account")
+                google_act.enable_ad_group(customer_id, entity.platform_adset_id)
+            else:
+                if not access_token:
+                    raise ValueError("No access token for account")
+                enable_ad_set(access_token, entity.platform_adset_id)
             entity.status = "ACTIVE"
             success = True
 
         elif action == "pause_ad":
-            if not access_token:
-                raise ValueError("No access token for account")
-            pause_ad(access_token, entity.platform_ad_id)
+            if is_google:
+                if not customer_id:
+                    raise ValueError("No customer_id for Google account")
+                adset = db.query(AdSet).filter(AdSet.id == entity.ad_set_id).first()
+                if not adset:
+                    raise ValueError("Ad group not found for Google ad")
+                google_act.pause_ad(customer_id, adset.platform_adset_id, entity.platform_ad_id)
+            else:
+                if not access_token:
+                    raise ValueError("No access token for account")
+                pause_ad(access_token, entity.platform_ad_id)
             entity.status = "PAUSED"
             success = True
 
         elif action == "enable_ad":
-            if not access_token:
-                raise ValueError("No access token for account")
-            enable_ad(access_token, entity.platform_ad_id)
+            if is_google:
+                if not customer_id:
+                    raise ValueError("No customer_id for Google account")
+                adset = db.query(AdSet).filter(AdSet.id == entity.ad_set_id).first()
+                if not adset:
+                    raise ValueError("Ad group not found for Google ad")
+                google_act.enable_ad(customer_id, adset.platform_adset_id, entity.platform_ad_id)
+            else:
+                if not access_token:
+                    raise ValueError("No access token for account")
+                enable_ad(access_token, entity.platform_ad_id)
             entity.status = "ACTIVE"
             success = True
 
         elif action == "adjust_budget":
-            if not access_token:
-                raise ValueError("No access token for account")
             params = rule.action_params or {}
             multiplier = params.get("budget_multiplier", 1.0)
             current_budget = float(entity.daily_budget or 0)
             new_budget = int(current_budget * multiplier)
-            if new_budget > 0:
-                update_budget(access_token, entity.platform_campaign_id, new_budget)
-                entity.daily_budget = new_budget
-                success = True
-            else:
+            if new_budget <= 0:
                 raise ValueError(f"Invalid new budget: {new_budget}")
+            if is_google:
+                if not customer_id:
+                    raise ValueError("No customer_id for Google account")
+                new_budget_micros = new_budget * 1_000_000
+                google_act.update_campaign_budget(customer_id, entity.platform_campaign_id, new_budget_micros)
+            else:
+                if not access_token:
+                    raise ValueError("No access token for account")
+                update_budget(access_token, entity.platform_campaign_id, new_budget)
+            entity.daily_budget = new_budget
+            success = True
 
         else:
             raise ValueError(f"Unknown action: {action}")
@@ -588,9 +633,18 @@ def reenable_paused_ads(db: Session) -> list[dict]:
         error_message = None
 
         try:
-            if not access_token:
-                raise ValueError("No access token for account")
-            enable_ad(access_token, ad_obj.platform_ad_id)
+            if ad_obj.platform == "google":
+                customer_id = account.account_id.replace("-", "") if account else None
+                if not customer_id:
+                    raise ValueError("No customer_id for Google account")
+                adset = db.query(AdSet).filter(AdSet.id == ad_obj.ad_set_id).first()
+                if not adset:
+                    raise ValueError("Ad group not found for Google ad")
+                google_act.enable_ad(customer_id, adset.platform_adset_id, ad_obj.platform_ad_id)
+            else:
+                if not access_token:
+                    raise ValueError("No access token for account")
+                enable_ad(access_token, ad_obj.platform_ad_id)
             ad_obj.status = "ACTIVE"
             success = True
             logger.info("Re-enabled ad %s (%s)", ad_obj.name, ad_obj.platform_ad_id)

@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, Legend,
@@ -44,6 +44,7 @@ interface DailyRow {
 interface AccountRow {
   account_id: string
   account_name: string
+  platform: string
   currency: string
   spend: number
   impressions: number
@@ -65,7 +66,13 @@ interface FunnelStep {
 
 interface Account {
   id: string
+  platform: string
   account_name: string
+  currency: string
+}
+
+interface Branch {
+  name: string
   currency: string
 }
 
@@ -132,16 +139,21 @@ export default function DashboardPage() {
   const [byAccount, setByAccount] = useState<AccountRow[]>([])
   const [funnel, setFunnel] = useState<FunnelStep[]>([])
   const [accounts, setAccounts] = useState<Account[]>([])
+  const [branches, setBranches] = useState<Branch[]>([])
   const [loading, setLoading] = useState(true)
 
-  const [selectedAccount, setSelectedAccount] = useState('')
+  const [selectedBranches, setSelectedBranches] = useState<string[]>([])
+  const [branchDropdownOpen, setBranchDropdownOpen] = useState(false)
+  const [selectedPlatform, setSelectedPlatform] = useState('')
   const [datePreset, setDatePreset] = useState('7d')
   const [customFrom, setCustomFrom] = useState('')
   const [customTo, setCustomTo] = useState('')
 
-  const activeCurrency = selectedAccount
-    ? accounts.find(a => a.id === selectedAccount)?.currency || 'VND'
-    : 'VND'
+  const activeCurrency = (() => {
+    if (selectedBranches.length === 0) return 'VND'
+    const currencies = [...new Set(selectedBranches.map(b => branches.find(br => br.name === b)?.currency || 'VND'))]
+    return currencies.length === 1 ? currencies[0] : 'VND'
+  })()
 
   const getDateParams = useCallback(() => {
     if (datePreset === 'custom' && customFrom && customTo) {
@@ -154,13 +166,14 @@ export default function DashboardPage() {
   const fetchData = useCallback(() => {
     setLoading(true)
     const dateParams = getDateParams()
-    const accParam = selectedAccount ? `&account_id=${selectedAccount}` : ''
-    const qs = `?${dateParams}${accParam}`
+    const branchParam = selectedBranches.length > 0 ? `&branches=${selectedBranches.join(',')}` : ''
+    const platParam = selectedPlatform ? `&platform=${selectedPlatform}` : ''
+    const qs = `?${dateParams}${branchParam}${platParam}`
 
     Promise.all([
       fetch(`${API_BASE}/api/dashboard/kpis${qs}`).then(r => r.json()),
       fetch(`${API_BASE}/api/dashboard/daily${qs}`).then(r => r.json()),
-      fetch(`${API_BASE}/api/dashboard/by-account?${dateParams}`).then(r => r.json()),
+      fetch(`${API_BASE}/api/dashboard/by-account?${dateParams}${branchParam}${platParam}`).then(r => r.json()),
       fetch(`${API_BASE}/api/dashboard/funnel${qs}`).then(r => r.json()),
     ])
       .then(([kpiRes, dailyRes, accountRes, funnelRes]) => {
@@ -171,14 +184,35 @@ export default function DashboardPage() {
       })
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [getDateParams, selectedAccount])
+  }, [getDateParams, selectedBranches, selectedPlatform])
 
   useEffect(() => {
     fetch(`${API_BASE}/api/accounts`)
       .then(r => r.json())
       .then(data => { if (data.success) setAccounts(data.data) })
       .catch(() => {})
+    fetch(`${API_BASE}/api/branches`)
+      .then(r => r.json())
+      .then(data => { if (data.success) setBranches(data.data) })
+      .catch(() => {})
   }, [])
+
+  const branchDropdownRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (branchDropdownRef.current && !branchDropdownRef.current.contains(e.target as Node)) {
+        setBranchDropdownOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
+  const toggleBranch = (name: string) => {
+    setSelectedBranches(prev =>
+      prev.includes(name) ? prev.filter(b => b !== name) : [...prev, name]
+    )
+  }
 
   useEffect(() => { fetchData() }, [fetchData])
 
@@ -242,17 +276,61 @@ export default function DashboardPage() {
             </>
           )}
 
-          {/* Branch filter */}
+          {/* Platform filter */}
           <select
-            value={selectedAccount}
-            onChange={(e) => setSelectedAccount(e.target.value)}
+            value={selectedPlatform}
+            onChange={(e) => setSelectedPlatform(e.target.value)}
             className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           >
-            <option value="">All Branches (VND)</option>
-            {accounts.map((a) => (
-              <option key={a.id} value={a.id}>{a.account_name} ({a.currency})</option>
-            ))}
+            <option value="">All Platforms</option>
+            <option value="meta">Meta Ads</option>
+            <option value="google">Google Ads</option>
+            <option value="tiktok">TikTok Ads</option>
           </select>
+
+          {/* Branch filter (multi-select) */}
+          <div className="relative" ref={branchDropdownRef}>
+            <button
+              onClick={() => setBranchDropdownOpen(!branchDropdownOpen)}
+              className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white min-w-[180px] text-left flex items-center justify-between gap-2"
+            >
+              <span className="truncate">
+                {selectedBranches.length === 0
+                  ? `All Branches (VND)`
+                  : selectedBranches.length === 1
+                    ? `${selectedBranches[0]} (${activeCurrency})`
+                    : `${selectedBranches.length} branches (${activeCurrency})`}
+              </span>
+              <svg className={`w-4 h-4 text-gray-400 transition-transform ${branchDropdownOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+            </button>
+            {branchDropdownOpen && (
+              <div className="absolute z-50 mt-1 w-56 bg-white border border-gray-200 rounded-lg shadow-lg py-1">
+                {selectedBranches.length > 0 && (
+                  <button
+                    onClick={() => setSelectedBranches([])}
+                    className="w-full px-3 py-1.5 text-xs text-blue-600 hover:bg-gray-50 text-left"
+                  >
+                    Clear all
+                  </button>
+                )}
+                {branches.map(b => (
+                  <label
+                    key={b.name}
+                    className="flex items-center gap-2 px-3 py-2 hover:bg-gray-50 cursor-pointer text-sm"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selectedBranches.includes(b.name)}
+                      onChange={() => toggleBranch(b.name)}
+                      className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                    />
+                    <span>{b.name}</span>
+                    <span className="text-gray-400 text-xs ml-auto">{b.currency}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -367,6 +445,7 @@ export default function DashboardPage() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-gray-100">
+                <th className="text-left py-3 px-2 text-gray-500 font-medium">Platform</th>
                 <th className="text-left py-3 px-2 text-gray-500 font-medium">Branch</th>
                 <th className="text-right py-3 px-2 text-gray-500 font-medium">Spend</th>
                 <th className="text-right py-3 px-2 text-gray-500 font-medium">Revenue</th>
@@ -377,8 +456,20 @@ export default function DashboardPage() {
               </tr>
             </thead>
             <tbody>
-              {byAccount.map((row) => (
+              {byAccount.map((row) => {
+                const platformColors: Record<string, string> = {
+                  meta: 'bg-blue-50 text-blue-700',
+                  google: 'bg-green-50 text-green-700',
+                  tiktok: 'bg-pink-50 text-pink-700',
+                }
+                const platformLabel = (row.platform || 'meta').charAt(0).toUpperCase() + (row.platform || 'meta').slice(1)
+                return (
                 <tr key={row.account_id} className="border-b border-gray-50 hover:bg-gray-50">
+                  <td className="py-3 px-2">
+                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${platformColors[row.platform] || 'bg-gray-50 text-gray-600'}`}>
+                      {platformLabel}
+                    </span>
+                  </td>
                   <td className="py-3 px-2">
                     <span className="font-medium text-gray-900">{row.account_name}</span>
                     <span className="text-xs text-gray-400 ml-1">({row.currency})</span>
@@ -394,9 +485,10 @@ export default function DashboardPage() {
                   <td className="py-3 px-2 text-right text-gray-700">{(row.ctr * 100).toFixed(2)}%</td>
                   <td className="py-3 px-2 text-right text-gray-700">{row.conversions}</td>
                 </tr>
-              ))}
+                )
+              })}
               {byAccount.length === 0 && (
-                <tr><td colSpan={7} className="py-8 text-center text-gray-400">No metrics data yet.</td></tr>
+                <tr><td colSpan={8} className="py-8 text-center text-gray-400">No metrics data yet.</td></tr>
               )}
             </tbody>
           </table>

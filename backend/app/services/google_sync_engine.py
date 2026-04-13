@@ -25,7 +25,9 @@ from app.services.google_client import (
     fetch_asset_groups,
     fetch_campaign_metrics,
     fetch_campaigns,
+    fetch_conversion_action_metrics,
 )
+from app.config import settings
 from app.services.parse_utils import parse_adset_metadata, parse_campaign_metadata
 
 logger = logging.getLogger(__name__)
@@ -106,8 +108,12 @@ def sync_google_account(db: Session, account: AdAccount) -> dict:
         "errors": [],
     }
 
-    if not account.access_token_enc:
-        summary["errors"].append("No refresh token configured for this account")
+    # Google uses global OAuth credentials from .env, not per-account tokens
+    if not settings.GOOGLE_REFRESH_TOKEN or not settings.GOOGLE_DEVELOPER_TOKEN:
+        summary["errors"].append(
+            "Google Ads global credentials missing: set GOOGLE_REFRESH_TOKEN "
+            "and GOOGLE_DEVELOPER_TOKEN in .env"
+        )
         return summary
 
     # --- 1. Fetch and upsert campaigns ---
@@ -310,7 +316,14 @@ def sync_google_account(db: Session, account: AdAccount) -> dict:
         summary["errors"].append(f"Failed to fetch assets: {e}")
         raw_assets = []
 
+    seen_assets = set()
     for raw in raw_assets:
+        # Deduplicate: same asset can appear multiple times with different field_types
+        dedup_key = (raw["asset_group_id"], raw["platform_asset_id"])
+        if dedup_key in seen_assets:
+            continue
+        seen_assets.add(dedup_key)
+
         asset_group = (
             db.query(GoogleAssetGroup)
             .filter(GoogleAssetGroup.platform_asset_group_id == raw["asset_group_id"])
@@ -430,6 +443,43 @@ def sync_google_account(db: Session, account: AdAccount) -> dict:
             ad_set_id=ad_obj.ad_set_id, ad_id=ad_obj.id,
         )
         summary["metrics_synced"] += 1
+
+    # --- 9. Fetch and merge conversion action metrics (add_to_cart, checkouts) ---
+    try:
+        conv_action_data = fetch_conversion_action_metrics(customer_id)
+    except Exception as e:
+        summary["errors"].append(f"Failed to fetch conversion action metrics: {e}")
+        conv_action_data = []
+
+    for row in conv_action_data:
+        campaign = (
+            db.query(Campaign)
+            .filter(Campaign.platform_campaign_id == row["campaign_id"])
+            .first()
+        )
+        if not campaign:
+            continue
+
+        insight_date = (
+            date.fromisoformat(row["date"])
+            if isinstance(row["date"], str)
+            else row["date"]
+        )
+
+        # Find the existing campaign-level metrics row for this date
+        existing = (
+            db.query(MetricsCache)
+            .filter(
+                MetricsCache.campaign_id == campaign.id,
+                MetricsCache.date == insight_date,
+                MetricsCache.ad_set_id.is_(None),
+                MetricsCache.ad_id.is_(None),
+            )
+            .first()
+        )
+        if existing:
+            current = getattr(existing, row["column"], 0) or 0
+            setattr(existing, row["column"], current + row["value"])
 
     db.commit()
     logger.info(

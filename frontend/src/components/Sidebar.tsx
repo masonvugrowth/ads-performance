@@ -13,6 +13,7 @@ const navSections = [
     items: [
       { href: '/', label: 'Dashboard' },
       { href: '/country', label: 'Country Dashboard' },
+      { href: '/booking-matches', label: 'Booking from Ads' },
     ],
   },
   {
@@ -28,7 +29,6 @@ const navSections = [
   {
     label: 'Google Ads',
     items: [
-      { href: '/google', label: 'Google Dashboard' },
       { href: '/google/pmax', label: 'PMax Campaigns' },
       { href: '/google/search', label: 'Search Campaigns' },
     ],
@@ -50,6 +50,7 @@ const navSections = [
     label: 'AI',
     items: [
       { href: '/insights', label: 'AI Insights' },
+      { href: '/transcriptions', label: 'Video Transcriptions' },
     ],
   },
   {

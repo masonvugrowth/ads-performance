@@ -1,6 +1,9 @@
 import logging
+from datetime import date, timedelta
 
 from app.database import SessionLocal
+from app.services.booking_match_service import run_matching
+from app.services.reservation_sync import sync_reservations
 from app.services.sync_engine import sync_all_platforms
 from app.services.rule_engine import evaluate_all_rules, reenable_paused_ads
 from app.tasks.celery_app import celery_app
@@ -57,5 +60,32 @@ def daily_rule_cycle_task(self):
     except Exception as exc:
         logger.exception("Daily rule cycle failed")
         raise self.retry(exc=exc, countdown=60)
+    finally:
+        db.close()
+
+
+@celery_app.task(name="app.tasks.sync_tasks.sync_reservations_and_match_task", bind=True, max_retries=3)
+def sync_reservations_and_match_task(self, days_back: int = 30):
+    """Pull last N days of reservations from PMS and run booking matching.
+
+    Runs daily via Celery Beat. Uses 30-day window by default to catch
+    late-arriving reservation updates and re-match them against ads data.
+    """
+    logger.info("Starting reservation sync + booking match task")
+    db = SessionLocal()
+    try:
+        date_to = date.today()
+        date_from = date_to - timedelta(days=days_back)
+
+        sync_summary = sync_reservations(db, date_from, date_to)
+        match_summary = run_matching(db, date_from, date_to)
+
+        return {
+            "sync": sync_summary,
+            "matching": match_summary,
+        }
+    except Exception as exc:
+        logger.exception("Reservation sync + match task failed")
+        raise self.retry(exc=exc, countdown=120)
     finally:
         db.close()

@@ -2,9 +2,11 @@ from app.models.account import AdAccount
 from app.models.ad import Ad
 from app.models.ad_set import AdSet
 from app.models.api_key import ApiKey
+from app.models.booking_match import BookingMatch
 from app.models.budget import BudgetAllocation, BudgetPlan
 from app.models.campaign import Campaign
 from app.models.metrics import MetricsCache
+from app.models.reservation import Reservation
 from app.models.rule import AutomationRule
 from app.models.action_log import ActionLog
 from app.models.ai_conversation import AIConversation
@@ -19,12 +21,14 @@ __all__ = [
     "Ad",
     "AdSet",
     "ApiKey",
+    "BookingMatch",
     "BudgetAllocation",
     "BudgetPlan",
     "Campaign",
     "GoogleAssetGroup",
     "GoogleAsset",
     "MetricsCache",
+    "Reservation",
     "AutomationRule",
     "ActionLog",
     "AIConversation",

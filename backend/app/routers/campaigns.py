@@ -10,6 +10,7 @@ from app.database import get_db
 from app.models.account import AdAccount
 from app.models.campaign import Campaign
 from app.models.metrics import MetricsCache
+from app.routers.accounts import get_account_ids_for_branches
 
 router = APIRouter()
 
@@ -171,13 +172,16 @@ def get_campaign_metrics(
         return _api_response(error=str(e))
 
 
-def _aggregate_kpis(db: Session, d_from: date, d_to: date, platform: str | None, account_id: str | None):
+def _aggregate_kpis(db: Session, d_from: date, d_to: date, platform: str | None,
+                    account_id: str | None = None, account_ids: list[str] | None = None):
     """Compute aggregated KPIs for a date range.
 
-    When account_id is None (all branches), converts spend/revenue to VND using FX rates.
-    When account_id is set (single branch), uses raw currency values.
+    When no filter (all branches), converts spend/revenue to VND using FX rates.
+    When account_id or account_ids set, uses raw currency values if single currency,
+    otherwise converts to VND.
     """
-    convert_to_vnd = account_id is None  # all branches → convert
+    has_filter = account_id is not None or (account_ids is not None and len(account_ids) > 0)
+    convert_to_vnd = not has_filter  # default: all branches → convert
 
     # Query per-account to apply FX rates
     q = db.query(
@@ -189,11 +193,21 @@ def _aggregate_kpis(db: Session, d_from: date, d_to: date, platform: str | None,
         func.sum(MetricsCache.revenue).label("revenue"),
     ).join(Campaign, MetricsCache.campaign_id == Campaign.id)
 
+    # Campaign-level only — exclude adset/ad rows to prevent triple counting
+    q = q.filter(MetricsCache.ad_set_id.is_(None), MetricsCache.ad_id.is_(None))
     q = q.filter(MetricsCache.date >= d_from, MetricsCache.date <= d_to)
     if platform:
         q = q.filter(MetricsCache.platform == platform)
     if account_id:
         q = q.filter(Campaign.account_id == account_id)
+    elif account_ids:
+        q = q.filter(Campaign.account_id.in_(account_ids))
+        # Check if multiple currencies → need VND conversion
+        currencies = db.query(AdAccount.currency).filter(
+            AdAccount.id.in_(account_ids)
+        ).distinct().all()
+        if len(currencies) > 1:
+            convert_to_vnd = True
 
     rows = q.group_by(Campaign.account_id).all()
 
@@ -245,10 +259,17 @@ def get_dashboard_kpis(
     date_to: date | None = None,
     platform: str | None = None,
     account_id: str | None = None,
+    branches: str | None = None,
     db: Session = Depends(get_db),
 ):
     """Aggregated KPIs with period-over-period comparison."""
     try:
+        # Resolve branches to account IDs
+        branch_account_ids = None
+        if branches:
+            branch_list = [b.strip() for b in branches.split(",") if b.strip()]
+            branch_account_ids = get_account_ids_for_branches(db, branch_list)
+
         # Default: current period = all available data (last 7 days)
         if date_to is None:
             date_to = date.today()
@@ -260,8 +281,8 @@ def get_dashboard_kpis(
         prev_to = date_from - timedelta(days=1)
         prev_from = prev_to - timedelta(days=period_days - 1)
 
-        current = _aggregate_kpis(db, date_from, date_to, platform, account_id)
-        previous = _aggregate_kpis(db, prev_from, prev_to, platform, account_id)
+        current = _aggregate_kpis(db, date_from, date_to, platform, account_id, branch_account_ids)
+        previous = _aggregate_kpis(db, prev_from, prev_to, platform, account_id, branch_account_ids)
 
         # Add % change for each metric
         change_keys = [
@@ -288,11 +309,19 @@ def get_dashboard_daily(
     date_to: date | None = None,
     platform: str | None = None,
     account_id: str | None = None,
+    branches: str | None = None,
     db: Session = Depends(get_db),
 ):
     """Daily aggregated metrics for dashboard charts. Converts to VND when all branches."""
     try:
-        convert_to_vnd = account_id is None
+        # Resolve branches to account IDs
+        branch_account_ids = None
+        if branches:
+            branch_list = [b.strip() for b in branches.split(",") if b.strip()]
+            branch_account_ids = get_account_ids_for_branches(db, branch_list)
+
+        has_filter = account_id is not None or (branch_account_ids is not None and len(branch_account_ids) > 0)
+        convert_to_vnd = not has_filter
 
         # Query per-account per-date for FX conversion
         q = db.query(
@@ -305,6 +334,8 @@ def get_dashboard_daily(
             func.sum(MetricsCache.revenue).label("revenue"),
         ).join(Campaign, MetricsCache.campaign_id == Campaign.id)
 
+        # Campaign-level only — exclude adset/ad rows to prevent triple counting
+        q = q.filter(MetricsCache.ad_set_id.is_(None), MetricsCache.ad_id.is_(None))
         if date_from:
             q = q.filter(MetricsCache.date >= date_from)
         if date_to:
@@ -313,6 +344,14 @@ def get_dashboard_daily(
             q = q.filter(MetricsCache.platform == platform)
         if account_id:
             q = q.filter(Campaign.account_id == account_id)
+        elif branch_account_ids:
+            q = q.filter(Campaign.account_id.in_(branch_account_ids))
+            # Check if multiple currencies
+            currencies = db.query(AdAccount.currency).filter(
+                AdAccount.id.in_(branch_account_ids)
+            ).distinct().all()
+            if len(currencies) > 1:
+                convert_to_vnd = True
 
         rows = q.group_by(MetricsCache.date, Campaign.account_id).order_by(MetricsCache.date).all()
 
@@ -363,10 +402,18 @@ def get_dashboard_daily(
 def get_dashboard_by_account(
     date_from: date | None = None,
     date_to: date | None = None,
+    platform: str | None = None,
+    branches: str | None = None,
     db: Session = Depends(get_db),
 ):
     """Metrics broken down by account (branch) for dashboard."""
     try:
+        # Resolve branches to account IDs
+        branch_account_ids = None
+        if branches:
+            branch_list = [b.strip() for b in branches.split(",") if b.strip()]
+            branch_account_ids = get_account_ids_for_branches(db, branch_list)
+
         q = db.query(
             Campaign.account_id,
             func.sum(MetricsCache.spend).label("spend"),
@@ -376,10 +423,16 @@ def get_dashboard_by_account(
             func.sum(MetricsCache.revenue).label("revenue"),
         ).join(Campaign, MetricsCache.campaign_id == Campaign.id)
 
+        # Campaign-level only — exclude adset/ad rows to prevent triple counting
+        q = q.filter(MetricsCache.ad_set_id.is_(None), MetricsCache.ad_id.is_(None))
         if date_from:
             q = q.filter(MetricsCache.date >= date_from)
         if date_to:
             q = q.filter(MetricsCache.date <= date_to)
+        if platform:
+            q = q.filter(MetricsCache.platform == platform)
+        if branch_account_ids:
+            q = q.filter(Campaign.account_id.in_(branch_account_ids))
 
         rows = q.group_by(Campaign.account_id).all()
 
@@ -401,6 +454,7 @@ def get_dashboard_by_account(
             result.append({
                 "account_id": r.account_id,
                 "account_name": acc.account_name if acc else "Unknown",
+                "platform": acc.platform if acc else "unknown",
                 "currency": acc.currency if acc else "VND",
                 "spend": spend,
                 "impressions": impressions,
@@ -418,7 +472,8 @@ def get_dashboard_by_account(
         return _api_response(error=str(e))
 
 
-def _aggregate_funnel(db: Session, d_from: date, d_to: date, platform: str | None, account_id: str | None):
+def _aggregate_funnel(db: Session, d_from: date, d_to: date, platform: str | None,
+                      account_id: str | None = None, account_ids: list[str] | None = None):
     """Aggregate funnel metrics for a date range."""
     q = db.query(
         func.sum(MetricsCache.impressions).label("impressions"),
@@ -429,11 +484,15 @@ def _aggregate_funnel(db: Session, d_from: date, d_to: date, platform: str | Non
         func.sum(MetricsCache.conversions).label("bookings"),
     ).join(Campaign, MetricsCache.campaign_id == Campaign.id)
 
+    # Campaign-level only — exclude adset/ad rows to prevent triple counting
+    q = q.filter(MetricsCache.ad_set_id.is_(None), MetricsCache.ad_id.is_(None))
     q = q.filter(MetricsCache.date >= d_from, MetricsCache.date <= d_to)
     if platform:
         q = q.filter(MetricsCache.platform == platform)
     if account_id:
         q = q.filter(Campaign.account_id == account_id)
+    elif account_ids:
+        q = q.filter(Campaign.account_id.in_(account_ids))
 
     row = q.one()
     return {
@@ -452,6 +511,7 @@ def get_dashboard_funnel(
     date_to: date | None = None,
     platform: str | None = None,
     account_id: str | None = None,
+    branches: str | None = None,
     db: Session = Depends(get_db),
 ):
     """Funnel metrics: Impression → Clicks → Search → Add to cart → Checkout → Booking.
@@ -459,6 +519,12 @@ def get_dashboard_funnel(
     Returns current + previous period with % change and drop-off rates.
     """
     try:
+        # Resolve branches to account IDs
+        branch_account_ids = None
+        if branches:
+            branch_list = [b.strip() for b in branches.split(",") if b.strip()]
+            branch_account_ids = get_account_ids_for_branches(db, branch_list)
+
         if date_to is None:
             date_to = date.today()
         if date_from is None:
@@ -468,8 +534,8 @@ def get_dashboard_funnel(
         prev_to = date_from - timedelta(days=1)
         prev_from = prev_to - timedelta(days=period_days - 1)
 
-        current = _aggregate_funnel(db, date_from, date_to, platform, account_id)
-        previous = _aggregate_funnel(db, prev_from, prev_to, platform, account_id)
+        current = _aggregate_funnel(db, date_from, date_to, platform, account_id, branch_account_ids)
+        previous = _aggregate_funnel(db, prev_from, prev_to, platform, account_id, branch_account_ids)
 
         # Build funnel steps with drop-off
         step_keys = ["impressions", "clicks", "searches", "add_to_cart", "checkouts", "bookings"]

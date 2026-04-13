@@ -55,11 +55,11 @@ keypoints = [
     ("Osaka", "experience", "Osaka food culture immersion"),
     ("Osaka", "value", "Affordable base for Kansai exploration"),
     # Meander Taipei
-    ("Taipei", "location", "Ximending — youth & shopping district"),
-    ("Taipei", "location", "Near Taipei Main Station"),
-    ("Taipei", "amenity", "Modern co-working lounge"),
-    ("Taipei", "experience", "Night market walking tour"),
-    ("Taipei", "value", "Budget-friendly for solo backpackers"),
+    ("Meander Taipei", "location", "Ximending — youth & shopping district"),
+    ("Meander Taipei", "location", "Near Taipei Main Station"),
+    ("Meander Taipei", "amenity", "Modern co-working lounge"),
+    ("Meander Taipei", "experience", "Night market walking tour"),
+    ("Meander Taipei", "value", "Budget-friendly for solo backpackers"),
     # Meander 1948
     ("1948", "location", "Historic Dadaocheng area, Taipei"),
     ("1948", "location", "Near Dihua Street heritage market"),
@@ -86,7 +86,7 @@ angles_data = [
     ("Saigon", "Solo", "Saigon street food & nightlife — solo explorer's paradise", "WIN", "Top performer SGN"),
     ("Osaka", "Solo", "Solo in Osaka — Dotonbori at your doorstep", "TEST", "Testing JP market"),
     ("Oani", "Solo", "Premium solo stay in Taipei's best district", "WIN", "Oani top ROAS angle"),
-    ("Taipei", "Solo", "Taipei solo adventure from Ximending", "TEST", "Multiple markets tested"),
+    ("Meander Taipei", "Solo", "Taipei solo adventure from Ximending", "TEST", "Multiple markets tested"),
     ("1948", "Solo", "Heritage solo experience in old Taipei", "TEST", "1948 unique positioning"),
     # Couple angles
     ("Osaka", "Couple", "Romantic Osaka getaway — cherry blossom special", "WIN", "Sakura season high conversion"),
@@ -129,8 +129,8 @@ copies_data = [
     # Osaka Generic
     ("Osaka", "Solo", "Your Osaka Base — Namba Location", "2 minutes to Dotonbori. Explore Kansai from the heart of Osaka. Free luggage storage, social common area.", "Book Direct", "en"),
     # Taipei Solo
-    ("Taipei", "Solo", "Solo in Taipei — Start from Ximending", "Night markets, MRT access, modern co-working space. The perfect solo backpacker base in Taipei.", "Book Now", "en"),
-    ("Taipei", "Solo", "Taipei Solo Backpacker's Dream", "Budget-friendly, perfectly located, socially designed. Meet fellow travelers while exploring Taipei your way.", "Check Availability", "en"),
+    ("Meander Taipei", "Solo", "Solo in Taipei — Start from Ximending", "Night markets, MRT access, modern co-working space. The perfect solo backpacker base in Taipei.", "Book Now", "en"),
+    ("Meander Taipei", "Solo", "Taipei Solo Backpacker's Dream", "Budget-friendly, perfectly located, socially designed. Meet fellow travelers while exploring Taipei your way.", "Check Availability", "en"),
     # 1948 Solo
     ("1948", "Solo", "Heritage Stay in Old Taipei", "Experience Dadaocheng's historic charm. Walk Dihua Street, discover heritage markets, stay in a beautifully renovated 1948 building.", "Discover 1948", "en"),
     ("1948", "Solo", "Taipei's Most Unique Stay", "Not just a hostel — a cultural experience. Heritage architecture meets modern comfort in historic Dadaocheng.", "Book Heritage Stay", "en"),
@@ -166,9 +166,9 @@ materials_data = [
     ("Osaka", "video", "Osaka food scene 30s reel", "Solo", "https://drive.google.com/osaka-food-reel"),
     ("Osaka", "carousel", "Osaka neighborhood guide — 6 slides", None, "https://drive.google.com/osaka-neighborhood"),
     # Taipei
-    ("Taipei", "image", "Solo backpacker at Ximending", "Solo", "https://drive.google.com/taipei-ximending-solo"),
-    ("Taipei", "video", "Taipei night market adventure", "Solo", "https://drive.google.com/taipei-nightmarket"),
-    ("Taipei", "carousel", "Taipei MRT travel guide", None, "https://drive.google.com/taipei-mrt-guide"),
+    ("Meander Taipei", "image", "Solo backpacker at Ximending", "Solo", "https://drive.google.com/taipei-ximending-solo"),
+    ("Meander Taipei", "video", "Taipei night market adventure", "Solo", "https://drive.google.com/taipei-nightmarket"),
+    ("Meander Taipei", "carousel", "Taipei MRT travel guide", None, "https://drive.google.com/taipei-mrt-guide"),
     # 1948
     ("1948", "image", "1948 heritage building exterior", "Solo", "https://drive.google.com/1948-heritage-exterior"),
     ("1948", "image", "Dihua Street morning scene", "Solo", "https://drive.google.com/1948-dihua-morning"),

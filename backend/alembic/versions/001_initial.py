@@ -9,7 +9,6 @@ from typing import Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
-from sqlalchemy.dialects import postgresql
 
 revision: str = "001_initial"
 down_revision: Union[str, None] = None
@@ -21,7 +20,7 @@ def upgrade() -> None:
     # ad_accounts
     op.create_table(
         "ad_accounts",
-        sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("gen_random_uuid()"), nullable=False),
+        sa.Column("id", sa.String(36), nullable=False),
         sa.Column("platform", sa.String(20), nullable=False),
         sa.Column("account_id", sa.String(100), nullable=False),
         sa.Column("account_name", sa.String(200), nullable=False),
@@ -39,8 +38,8 @@ def upgrade() -> None:
     # campaigns
     op.create_table(
         "campaigns",
-        sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("gen_random_uuid()"), nullable=False),
-        sa.Column("account_id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("id", sa.String(36), nullable=False),
+        sa.Column("account_id", sa.String(36), nullable=False),
         sa.Column("platform", sa.String(20), nullable=False),
         sa.Column("platform_campaign_id", sa.String(100), nullable=False),
         sa.Column("name", sa.String(500), nullable=False),
@@ -50,7 +49,7 @@ def upgrade() -> None:
         sa.Column("lifetime_budget", sa.Numeric(15, 2), nullable=True),
         sa.Column("start_date", sa.Date(), nullable=True),
         sa.Column("end_date", sa.Date(), nullable=True),
-        sa.Column("raw_data", postgresql.JSONB(), nullable=True),
+        sa.Column("raw_data", sa.JSON(), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.PrimaryKeyConstraint("id"),
@@ -64,8 +63,8 @@ def upgrade() -> None:
     # metrics_cache
     op.create_table(
         "metrics_cache",
-        sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("gen_random_uuid()"), nullable=False),
-        sa.Column("campaign_id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("id", sa.String(36), nullable=False),
+        sa.Column("campaign_id", sa.String(36), nullable=False),
         sa.Column("platform", sa.String(20), nullable=False),
         sa.Column("date", sa.Date(), nullable=False),
         sa.Column("spend", sa.Numeric(15, 2), nullable=False, server_default="0"),
@@ -92,13 +91,13 @@ def upgrade() -> None:
     # automation_rules
     op.create_table(
         "automation_rules",
-        sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("gen_random_uuid()"), nullable=False),
+        sa.Column("id", sa.String(36), nullable=False),
         sa.Column("name", sa.String(200), nullable=False),
         sa.Column("platform", sa.String(20), nullable=False),
-        sa.Column("account_id", postgresql.UUID(as_uuid=True), nullable=True),
-        sa.Column("conditions", postgresql.JSONB(), nullable=False),
+        sa.Column("account_id", sa.String(36), nullable=True),
+        sa.Column("conditions", sa.JSON(), nullable=False),
         sa.Column("action", sa.String(50), nullable=False),
-        sa.Column("action_params", postgresql.JSONB(), nullable=True),
+        sa.Column("action_params", sa.JSON(), nullable=True),
         sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.text("true")),
         sa.Column("last_evaluated_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("created_by", sa.String(100), nullable=True),
@@ -114,14 +113,14 @@ def upgrade() -> None:
     # action_logs (IMMUTABLE)
     op.create_table(
         "action_logs",
-        sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("gen_random_uuid()"), nullable=False),
-        sa.Column("rule_id", postgresql.UUID(as_uuid=True), nullable=True),
-        sa.Column("campaign_id", postgresql.UUID(as_uuid=True), nullable=True),
+        sa.Column("id", sa.String(36), nullable=False),
+        sa.Column("rule_id", sa.String(36), nullable=True),
+        sa.Column("campaign_id", sa.String(36), nullable=True),
         sa.Column("platform", sa.String(20), nullable=False),
         sa.Column("action", sa.String(50), nullable=False),
-        sa.Column("action_params", postgresql.JSONB(), nullable=True),
+        sa.Column("action_params", sa.JSON(), nullable=True),
         sa.Column("triggered_by", sa.String(20), nullable=False),
-        sa.Column("metrics_snapshot", postgresql.JSONB(), nullable=True),
+        sa.Column("metrics_snapshot", sa.JSON(), nullable=True),
         sa.Column("success", sa.Boolean(), nullable=False),
         sa.Column("error_message", sa.Text(), nullable=True),
         sa.Column("executed_at", sa.DateTime(timezone=True), nullable=False),
@@ -139,8 +138,8 @@ def upgrade() -> None:
     # ai_conversations
     op.create_table(
         "ai_conversations",
-        sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("gen_random_uuid()"), nullable=False),
-        sa.Column("session_id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("id", sa.String(36), nullable=False),
+        sa.Column("session_id", sa.String(36), nullable=False),
         sa.Column("role", sa.String(10), nullable=False),
         sa.Column("content", sa.Text(), nullable=False),
         sa.Column("platform_filter", sa.String(20), nullable=True),

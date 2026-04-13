@@ -163,12 +163,15 @@ def fetch_campaign_insights(
             },
         )
 
-        # Action types to extract from Meta's actions array
-        PURCHASE_TYPES = {"purchase", "offsite_conversion.fb_pixel_purchase"}
-        ADD_TO_CART_TYPES = {"add_to_cart", "offsite_conversion.fb_pixel_add_to_cart"}
-        CHECKOUT_TYPES = {"initiate_checkout", "offsite_conversion.fb_pixel_initiate_checkout"}
-        SEARCH_TYPES = {"search", "offsite_conversion.fb_pixel_search"}
-        LEAD_TYPES = {"lead", "offsite_conversion.fb_pixel_lead"}
+        # Action types to extract from Meta's actions array.
+        # Use ONLY offsite_conversion.fb_pixel_* types to avoid double counting.
+        # Meta returns the same event under multiple action_type keys
+        # (e.g. "add_to_cart" AND "offsite_conversion.fb_pixel_add_to_cart").
+        PURCHASE_TYPES = {"offsite_conversion.fb_pixel_purchase"}
+        ADD_TO_CART_TYPES = {"offsite_conversion.fb_pixel_add_to_cart"}
+        CHECKOUT_TYPES = {"offsite_conversion.fb_pixel_initiate_checkout"}
+        SEARCH_TYPES = {"offsite_conversion.fb_pixel_search"}
+        LEAD_TYPES = {"offsite_conversion.fb_pixel_lead"}
         LANDING_PAGE_TYPES = {"landing_page_view"}
 
         results = []
@@ -313,11 +316,12 @@ def fetch_ads(account_id: str, access_token: str) -> list[dict]:
 
 def _parse_insights_rows(rows, entity_id_key: str) -> list[dict]:
     """Shared parser for insight rows at any level (campaign/adset/ad)."""
-    PURCHASE_TYPES = {"purchase", "offsite_conversion.fb_pixel_purchase"}
-    ADD_TO_CART_TYPES = {"add_to_cart", "offsite_conversion.fb_pixel_add_to_cart"}
-    CHECKOUT_TYPES = {"initiate_checkout", "offsite_conversion.fb_pixel_initiate_checkout"}
-    SEARCH_TYPES = {"search", "offsite_conversion.fb_pixel_search"}
-    LEAD_TYPES = {"lead", "offsite_conversion.fb_pixel_lead"}
+    # Use ONLY offsite_conversion.fb_pixel_* to avoid double counting.
+    PURCHASE_TYPES = {"offsite_conversion.fb_pixel_purchase"}
+    ADD_TO_CART_TYPES = {"offsite_conversion.fb_pixel_add_to_cart"}
+    CHECKOUT_TYPES = {"offsite_conversion.fb_pixel_initiate_checkout"}
+    SEARCH_TYPES = {"offsite_conversion.fb_pixel_search"}
+    LEAD_TYPES = {"offsite_conversion.fb_pixel_lead"}
     LANDING_PAGE_TYPES = {"landing_page_view"}
 
     results = []

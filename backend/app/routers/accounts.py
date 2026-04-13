@@ -59,6 +59,66 @@ def list_accounts(db: Session = Depends(get_db)):
         return _api_response(error=str(e))
 
 
+# Branch name → account_name patterns for matching
+BRANCH_ACCOUNT_MAP = {
+    "Saigon": ["Meander Saigon", "Saigon"],
+    "Osaka": ["Meander Osaka", "Osaka"],
+    "Taipei": ["Meander Taipei", "Taipei"],
+    "1948": ["Meander 1948", "1948"],
+    "Oani": ["Oani (Taipei)", "Oani"],
+    "Bread": ["Bread Espresso", "Bread"],
+}
+
+BRANCH_CURRENCY = {
+    "Saigon": "VND",
+    "Osaka": "JPY",
+    "Taipei": "TWD",
+    "1948": "TWD",
+    "Oani": "TWD",
+    "Bread": "TWD",
+}
+
+
+def get_account_ids_for_branches(db: Session, branches: list[str]) -> list[str]:
+    """Get all account IDs that belong to the given branches."""
+    account_ids = []
+    for branch in branches:
+        patterns = BRANCH_ACCOUNT_MAP.get(branch, [branch])
+        for pattern in patterns:
+            accs = db.query(AdAccount.id).filter(
+                AdAccount.account_name.ilike(f"%{pattern}%"),
+                AdAccount.is_active.is_(True),
+            ).all()
+            account_ids.extend([str(a.id) for a in accs])
+    return list(set(account_ids))
+
+
+@router.get("/branches")
+def list_branches(db: Session = Depends(get_db)):
+    """Return available branches with their currencies."""
+    try:
+        branches = []
+        for branch, patterns in BRANCH_ACCOUNT_MAP.items():
+            # Check if branch has any active accounts
+            has_accounts = False
+            for pattern in patterns:
+                count = db.query(AdAccount.id).filter(
+                    AdAccount.account_name.ilike(f"%{pattern}%"),
+                    AdAccount.is_active.is_(True),
+                ).count()
+                if count > 0:
+                    has_accounts = True
+                    break
+            if has_accounts:
+                branches.append({
+                    "name": branch,
+                    "currency": BRANCH_CURRENCY.get(branch, "VND"),
+                })
+        return _api_response(data=branches)
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
 @router.post("/accounts")
 def create_account(body: AccountCreate, db: Session = Depends(get_db)):
     try:
