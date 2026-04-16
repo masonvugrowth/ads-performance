@@ -13,7 +13,7 @@ celery==5.4.0
 redis==5.2.1
 
 # Meta Ads
-facebook-business==21.0.2
+facebook-business==21.0.5
 
 # Google Ads
 google-ads==30.0.0
