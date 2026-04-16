@@ -6,12 +6,15 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.core.permissions import scoped_account_ids
 from app.database import get_db
+from app.dependencies.auth import require_section
 from app.models.ad_angle import AdAngle
 from app.models.ad_combo import AdCombo
 from app.models.ad_copy import AdCopy
 from app.models.ad_material import AdMaterial
 from app.models.keypoint import BranchKeypoint
+from app.models.user import User
 from app.services.creative_service import (
     auto_classify_all_combos, next_angle_id, next_combo_id,
     next_copy_id, next_material_id, propagate_derived_verdicts,
@@ -39,11 +42,23 @@ class KeypointCreate(BaseModel):
 
 
 @router.get("/keypoints")
-def list_keypoints(branch_id: str | None = None, category: str | None = None, db: Session = Depends(get_db)):
+def list_keypoints(
+    branch_id: str | None = None,
+    category: str | None = None,
+    current_user: User = Depends(require_section("meta_ads")),
+    db: Session = Depends(get_db),
+):
     try:
+        ok, scoped_ids, err = scoped_account_ids(
+            db, current_user, "meta_ads", requested_account_id=branch_id
+        )
+        if not ok:
+            return _api_response(error=err)
         q = db.query(BranchKeypoint).filter(BranchKeypoint.is_active.is_(True))
         if branch_id:
             q = q.filter(BranchKeypoint.branch_id == branch_id)
+        elif scoped_ids is not None:
+            q = q.filter(BranchKeypoint.branch_id.in_(scoped_ids or ["__no_match__"]))
         if category:
             q = q.filter(BranchKeypoint.category == category)
         rows = q.order_by(BranchKeypoint.category, BranchKeypoint.title).all()
@@ -87,8 +102,17 @@ def list_keypoints(branch_id: str | None = None, category: str | None = None, db
 
 
 @router.post("/keypoints")
-def create_keypoint(body: KeypointCreate, db: Session = Depends(get_db)):
+def create_keypoint(
+    body: KeypointCreate,
+    current_user: User = Depends(require_section("meta_ads", "edit")),
+    db: Session = Depends(get_db),
+):
     try:
+        ok, _ids, err = scoped_account_ids(
+            db, current_user, "meta_ads", requested_account_id=body.branch_id, min_level="edit"
+        )
+        if not ok:
+            return _api_response(error=err)
         kp = BranchKeypoint(branch_id=body.branch_id, category=body.category, title=body.title)
         db.add(kp)
         db.commit()
@@ -100,11 +124,20 @@ def create_keypoint(body: KeypointCreate, db: Session = Depends(get_db)):
 
 
 @router.delete("/keypoints/{kp_id}")
-def delete_keypoint(kp_id: str, db: Session = Depends(get_db)):
+def delete_keypoint(
+    kp_id: str,
+    current_user: User = Depends(require_section("meta_ads", "edit")),
+    db: Session = Depends(get_db),
+):
     try:
         kp = db.query(BranchKeypoint).filter(BranchKeypoint.id == kp_id).first()
         if not kp:
             return _api_response(error="Keypoint not found")
+        ok, _ids, err = scoped_account_ids(
+            db, current_user, "meta_ads", requested_account_id=kp.branch_id, min_level="edit"
+        )
+        if not ok:
+            return _api_response(error=err)
         kp.is_active = False
         db.commit()
         return _api_response(data={"id": kp.id, "is_active": False})
@@ -137,7 +170,9 @@ class AngleUpdate(BaseModel):
 @router.get("/angles")
 def list_angles(
     branch_id: str | None = None,
-    status: str | None = None, db: Session = Depends(get_db),
+    status: str | None = None,
+    current_user: User = Depends(require_section("meta_ads")),
+    db: Session = Depends(get_db),
 ):
     try:
         q = db.query(AdAngle)
@@ -201,7 +236,11 @@ def list_angles(
 
 
 @router.post("/angles")
-def create_angle(body: AngleCreate, db: Session = Depends(get_db)):
+def create_angle(
+    body: AngleCreate,
+    current_user: User = Depends(require_section("meta_ads", "edit")),
+    db: Session = Depends(get_db),
+):
     try:
         aid = next_angle_id(db)
         angle = AdAngle(
@@ -220,7 +259,12 @@ def create_angle(body: AngleCreate, db: Session = Depends(get_db)):
 
 
 @router.patch("/angles/{angle_id}")
-def update_angle(angle_id: str, body: AngleUpdate, db: Session = Depends(get_db)):
+def update_angle(
+    angle_id: str,
+    body: AngleUpdate,
+    current_user: User = Depends(require_section("meta_ads", "edit")),
+    db: Session = Depends(get_db),
+):
     try:
         angle = db.query(AdAngle).filter(AdAngle.angle_id == angle_id).first()
         if not angle:
@@ -260,12 +304,20 @@ class CopyCreate(BaseModel):
 def list_copies(
     branch_id: str | None = None, target_audience: str | None = None,
     limit: int = Query(50, le=200), offset: int = Query(0, ge=0),
+    current_user: User = Depends(require_section("meta_ads")),
     db: Session = Depends(get_db),
 ):
     try:
+        ok, scoped_ids, err = scoped_account_ids(
+            db, current_user, "meta_ads", requested_account_id=branch_id
+        )
+        if not ok:
+            return _api_response(error=err)
         q = db.query(AdCopy)
         if branch_id:
             q = q.filter(AdCopy.branch_id == branch_id)
+        elif scoped_ids is not None:
+            q = q.filter(AdCopy.branch_id.in_(scoped_ids or ["__no_match__"]))
         if target_audience:
             q = q.filter(AdCopy.target_audience == target_audience)
         total = q.count()
@@ -281,8 +333,17 @@ def list_copies(
 
 
 @router.post("/copies")
-def create_copy(body: CopyCreate, db: Session = Depends(get_db)):
+def create_copy(
+    body: CopyCreate,
+    current_user: User = Depends(require_section("meta_ads", "edit")),
+    db: Session = Depends(get_db),
+):
     try:
+        ok, _ids, err = scoped_account_ids(
+            db, current_user, "meta_ads", requested_account_id=body.branch_id, min_level="edit"
+        )
+        if not ok:
+            return _api_response(error=err)
         cid = next_copy_id(db)
         copy = AdCopy(
             copy_id=cid, branch_id=body.branch_id, target_audience=body.target_audience,
@@ -313,12 +374,20 @@ class MaterialCreate(BaseModel):
 def list_materials(
     branch_id: str | None = None, material_type: str | None = None,
     limit: int = Query(50, le=200), offset: int = Query(0, ge=0),
+    current_user: User = Depends(require_section("meta_ads")),
     db: Session = Depends(get_db),
 ):
     try:
+        ok, scoped_ids, err = scoped_account_ids(
+            db, current_user, "meta_ads", requested_account_id=branch_id
+        )
+        if not ok:
+            return _api_response(error=err)
         q = db.query(AdMaterial)
         if branch_id:
             q = q.filter(AdMaterial.branch_id == branch_id)
+        elif scoped_ids is not None:
+            q = q.filter(AdMaterial.branch_id.in_(scoped_ids or ["__no_match__"]))
         if material_type:
             q = q.filter(AdMaterial.material_type == material_type)
         total = q.count()
@@ -327,24 +396,77 @@ def list_materials(
             "id": r.id, "material_id": r.material_id, "branch_id": r.branch_id,
             "material_type": r.material_type, "file_url": r.file_url,
             "description": r.description, "target_audience": r.target_audience,
-            "derived_verdict": r.derived_verdict,
+            "derived_verdict": r.derived_verdict, "url_source": r.url_source,
         } for r in rows], "total": total})
     except Exception as e:
         return _api_response(error=str(e))
 
 
 @router.post("/materials")
-def create_material(body: MaterialCreate, db: Session = Depends(get_db)):
+def create_material(
+    body: MaterialCreate,
+    current_user: User = Depends(require_section("meta_ads", "edit")),
+    db: Session = Depends(get_db),
+):
     try:
+        ok, _ids, err = scoped_account_ids(
+            db, current_user, "meta_ads", requested_account_id=body.branch_id, min_level="edit"
+        )
+        if not ok:
+            return _api_response(error=err)
         mid = next_material_id(db)
         mat = AdMaterial(
             material_id=mid, branch_id=body.branch_id, material_type=body.material_type,
             file_url=body.file_url, description=body.description, target_audience=body.target_audience,
+            url_source="manual",  # designer-created → protect from weekly Meta sync overwrite
         )
         db.add(mat)
         db.commit()
         db.refresh(mat)
         return _api_response(data={"id": mat.id, "material_id": mid})
+    except Exception as e:
+        db.rollback()
+        return _api_response(error=str(e))
+
+
+class MaterialUpdate(BaseModel):
+    file_url: str | None = None
+    description: str | None = None
+    target_audience: str | None = None
+    material_type: str | None = None
+
+
+@router.patch("/materials/{material_id}")
+def update_material(
+    material_id: str,
+    body: MaterialUpdate,
+    current_user: User = Depends(require_section("meta_ads", "edit")),
+    db: Session = Depends(get_db),
+):
+    """Update a material. If file_url is provided, marks url_source='manual' so the
+    weekly Meta sync task will not overwrite the designer's custom URL."""
+    try:
+        mat = db.query(AdMaterial).filter(AdMaterial.material_id == material_id).first()
+        if not mat:
+            return _api_response(error=f"material {material_id} not found")
+        ok, _ids, err = scoped_account_ids(
+            db, current_user, "meta_ads", requested_account_id=mat.branch_id, min_level="edit"
+        )
+        if not ok:
+            return _api_response(error=err)
+
+        if body.file_url is not None:
+            mat.file_url = body.file_url
+            mat.url_source = "manual"
+        if body.description is not None:
+            mat.description = body.description
+        if body.target_audience is not None:
+            mat.target_audience = body.target_audience
+        if body.material_type is not None:
+            mat.material_type = body.material_type
+
+        db.commit()
+        return _api_response(data={"material_id": material_id, "url_source": mat.url_source})
     except Exception as e:
         db.rollback()
         return _api_response(error=str(e))
@@ -378,12 +500,20 @@ def list_combos(
     target_audience: str | None = None, country: str | None = None,
     sort_by: str | None = None, sort_dir: str = "desc",
     limit: int = Query(50, le=200), offset: int = Query(0, ge=0),
+    current_user: User = Depends(require_section("meta_ads")),
     db: Session = Depends(get_db),
 ):
     try:
+        ok, scoped_ids, err = scoped_account_ids(
+            db, current_user, "meta_ads", requested_account_id=branch_id
+        )
+        if not ok:
+            return _api_response(error=err)
         q = db.query(AdCombo)
         if branch_id:
             q = q.filter(AdCombo.branch_id == branch_id)
+        elif scoped_ids is not None:
+            q = q.filter(AdCombo.branch_id.in_(scoped_ids or ["__no_match__"]))
         if verdict:
             q = q.filter(AdCombo.verdict == verdict)
         if target_audience:
@@ -471,8 +601,17 @@ def list_combos(
 
 
 @router.post("/combos")
-def create_combo(body: ComboCreate, db: Session = Depends(get_db)):
+def create_combo(
+    body: ComboCreate,
+    current_user: User = Depends(require_section("meta_ads", "edit")),
+    db: Session = Depends(get_db),
+):
     try:
+        ok, _ids, err = scoped_account_ids(
+            db, current_user, "meta_ads", requested_account_id=body.branch_id, min_level="edit"
+        )
+        if not ok:
+            return _api_response(error=err)
         cid = next_combo_id(db)
         combo = AdCombo(
             combo_id=cid, branch_id=body.branch_id,
@@ -498,12 +637,22 @@ class ComboUpdate(BaseModel):
 
 
 @router.patch("/combos/{combo_id}")
-def update_combo(combo_id: str, body: ComboUpdate, db: Session = Depends(get_db)):
+def update_combo(
+    combo_id: str,
+    body: ComboUpdate,
+    current_user: User = Depends(require_section("meta_ads", "edit")),
+    db: Session = Depends(get_db),
+):
     """Update combo's angle and/or keypoints."""
     try:
         combo = db.query(AdCombo).filter(AdCombo.combo_id == combo_id).first()
         if not combo:
             return _api_response(error="Combo not found")
+        ok, _ids, err = scoped_account_ids(
+            db, current_user, "meta_ads", requested_account_id=combo.branch_id, min_level="edit"
+        )
+        if not ok:
+            return _api_response(error=err)
         if body.angle_id is not None:
             combo.angle_id = body.angle_id if body.angle_id else None
         if body.keypoint_ids is not None:
@@ -516,11 +665,21 @@ def update_combo(combo_id: str, body: ComboUpdate, db: Session = Depends(get_db)
 
 
 @router.patch("/combos/{combo_id}/verdict")
-def update_verdict(combo_id: str, body: VerdictUpdate, db: Session = Depends(get_db)):
+def update_verdict(
+    combo_id: str,
+    body: VerdictUpdate,
+    current_user: User = Depends(require_section("meta_ads", "edit")),
+    db: Session = Depends(get_db),
+):
     try:
         combo = db.query(AdCombo).filter(AdCombo.combo_id == combo_id).first()
         if not combo:
             return _api_response(error="Combo not found")
+        ok, _ids, err = scoped_account_ids(
+            db, current_user, "meta_ads", requested_account_id=combo.branch_id, min_level="edit"
+        )
+        if not ok:
+            return _api_response(error=err)
         combo.verdict = body.verdict
         combo.verdict_source = "manual"
         combo.verdict_notes = body.verdict_notes
@@ -547,13 +706,23 @@ class QuickComboCreate(BaseModel):
 
 
 @router.post("/combos/quick-create")
-def quick_create_combo(body: QuickComboCreate, db: Session = Depends(get_db)):
+def quick_create_combo(
+    body: QuickComboCreate,
+    current_user: User = Depends(require_section("meta_ads", "edit")),
+    db: Session = Depends(get_db),
+):
     """Create Material + Copy + Combo in one step.
 
     Designed for the approval submission flow: user provides creative link,
     headline, and primary text — system creates all three records automatically.
     """
     try:
+        ok, _ids, err = scoped_account_ids(
+            db, current_user, "meta_ads", requested_account_id=body.branch_id, min_level="edit"
+        )
+        if not ok:
+            return _api_response(error=err)
+
         # 1. Create Material
         mid = next_material_id(db)
         material = AdMaterial(
@@ -612,7 +781,10 @@ def quick_create_combo(body: QuickComboCreate, db: Session = Depends(get_db)):
 
 
 @router.post("/combos/auto-classify")
-def auto_classify(db: Session = Depends(get_db)):
+def auto_classify(
+    current_user: User = Depends(require_section("meta_ads", "edit")),
+    db: Session = Depends(get_db),
+):
     """Auto-classify all combos: TEST (clicks<=4500 or bookings<5), WIN (ROAS>=benchmark), LOSE (ROAS<benchmark)."""
     try:
         updated = auto_classify_all_combos(db)
@@ -628,9 +800,19 @@ def auto_classify(db: Session = Depends(get_db)):
 
 
 @router.get("/analytics/by-keypoint")
-def analytics_by_keypoint(branch_id: str | None = None, db: Session = Depends(get_db)):
+def analytics_by_keypoint(
+    branch_id: str | None = None,
+    current_user: User = Depends(require_section("meta_ads")),
+    db: Session = Depends(get_db),
+):
     """Aggregate combo performance grouped by keypoint."""
     try:
+        ok, scoped_ids, err = scoped_account_ids(
+            db, current_user, "meta_ads", requested_account_id=branch_id
+        )
+        if not ok:
+            return _api_response(error=err)
+
         from sqlalchemy import func
         q = db.query(
             AdCombo.keypoint_id,
@@ -644,6 +826,8 @@ def analytics_by_keypoint(branch_id: str | None = None, db: Session = Depends(ge
 
         if branch_id:
             q = q.filter(AdCombo.branch_id == branch_id)
+        elif scoped_ids is not None:
+            q = q.filter(AdCombo.branch_id.in_(scoped_ids or ["__no_match__"]))
 
         rows = q.group_by(AdCombo.keypoint_id).all()
 
@@ -677,9 +861,19 @@ def analytics_by_keypoint(branch_id: str | None = None, db: Session = Depends(ge
 
 
 @router.get("/analytics/by-angle")
-def analytics_by_angle(branch_id: str | None = None, db: Session = Depends(get_db)):
+def analytics_by_angle(
+    branch_id: str | None = None,
+    current_user: User = Depends(require_section("meta_ads")),
+    db: Session = Depends(get_db),
+):
     """Aggregate combo performance grouped by angle."""
     try:
+        ok, scoped_ids, err = scoped_account_ids(
+            db, current_user, "meta_ads", requested_account_id=branch_id
+        )
+        if not ok:
+            return _api_response(error=err)
+
         from sqlalchemy import func
         q = db.query(
             AdCombo.angle_id,
@@ -693,6 +887,8 @@ def analytics_by_angle(branch_id: str | None = None, db: Session = Depends(get_d
 
         if branch_id:
             q = q.filter(AdCombo.branch_id == branch_id)
+        elif scoped_ids is not None:
+            q = q.filter(AdCombo.branch_id.in_(scoped_ids or ["__no_match__"]))
 
         rows = q.group_by(AdCombo.angle_id).all()
 

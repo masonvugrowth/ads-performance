@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Plus, Trash2, Play, X, FileText, Pencil } from 'lucide-react'
+import { useAuth } from '@/components/AuthContext'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
@@ -107,6 +108,8 @@ function conditionSummary(conditions: Condition[]): string {
 }
 
 export default function RulesPage() {
+  const { canEditSection } = useAuth()
+  const canEdit = canEditSection('automation')
   const router = useRouter()
   const [rules, setRules] = useState<Rule[]>([])
   const [accounts, setAccounts] = useState<Account[]>([])
@@ -251,9 +254,11 @@ export default function RulesPage() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold text-gray-900">Automation Rules</h1>
-        <button onClick={startCreate} className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700">
-          <Plus className="w-4 h-4" /> Create Rule
-        </button>
+        {canEdit && (
+          <button onClick={startCreate} className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700">
+            <Plus className="w-4 h-4" /> Create Rule
+          </button>
+        )}
       </div>
 
       {evalResult && (
@@ -437,10 +442,10 @@ export default function RulesPage() {
                     </td>
                     <td className="py-3 px-4 text-center">
                       <div className="flex items-center justify-center gap-2">
-                        <button onClick={() => evaluateRule(rule.id)} title="Run now" className="p-1.5 rounded hover:bg-blue-50 text-blue-600"><Play className="w-4 h-4" /></button>
-                        <button onClick={() => startEdit(rule)} title="Edit" className="p-1.5 rounded hover:bg-amber-50 text-amber-600"><Pencil className="w-4 h-4" /></button>
+                        {canEdit && <button onClick={() => evaluateRule(rule.id)} title="Run now" className="p-1.5 rounded hover:bg-blue-50 text-blue-600"><Play className="w-4 h-4" /></button>}
+                        {canEdit && <button onClick={() => startEdit(rule)} title="Edit" className="p-1.5 rounded hover:bg-amber-50 text-amber-600"><Pencil className="w-4 h-4" /></button>}
                         <button onClick={() => router.push(`/logs?rule_id=${rule.id}&rule_name=${encodeURIComponent(rule.name)}`)} title="View Logs" className="p-1.5 rounded hover:bg-purple-50 text-purple-600"><FileText className="w-4 h-4" /></button>
-                        <button onClick={() => deleteRule(rule.id)} title="Delete" className="p-1.5 rounded hover:bg-red-50 text-red-500"><Trash2 className="w-4 h-4" /></button>
+                        {canEdit && <button onClick={() => deleteRule(rule.id)} title="Delete" className="p-1.5 rounded hover:bg-red-50 text-red-500"><Trash2 className="w-4 h-4" /></button>}
                       </div>
                     </td>
                   </tr>

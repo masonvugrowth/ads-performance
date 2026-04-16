@@ -4,6 +4,7 @@ from functools import wraps
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
+from app.core.permissions import has_section_access
 from app.database import get_db
 from app.models.user import User
 from app.services.auth_service import decode_access_token
@@ -63,3 +64,31 @@ def require_role(allowed_roles: list[str]):
         return current_user
 
     return role_checker
+
+
+def require_section(section: str, level: str = "view"):
+    """FastAPI dependency factory that ensures the current user has at least
+    `level` access to *some* branch within `section`. Admin bypasses all checks.
+
+    Usage:
+        @router.get('/endpoint')
+        def my_read(user: User = Depends(require_section('meta_ads'))):
+            ...
+
+        @router.post('/endpoint')
+        def my_write(user: User = Depends(require_section('meta_ads', 'edit'))):
+            ...
+    """
+
+    def section_checker(
+        current_user: User = Depends(get_current_user),
+        db: Session = Depends(get_db),
+    ) -> User:
+        if not has_section_access(db, current_user, section, level):
+            raise HTTPException(
+                status_code=403,
+                detail=f"No {level} access to section '{section}'",
+            )
+        return current_user
+
+    return section_checker

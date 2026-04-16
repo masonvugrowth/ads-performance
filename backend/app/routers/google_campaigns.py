@@ -9,7 +9,9 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Body, Depends, Query
 from sqlalchemy.orm import Session
 
+from app.core.permissions import scoped_account_ids
 from app.database import get_db
+from app.dependencies.auth import require_section
 from app.models.account import AdAccount
 from app.models.action_log import ActionLog
 from app.models.ad import Ad
@@ -18,6 +20,7 @@ from app.models.campaign import Campaign
 from app.models.google_asset import GoogleAsset
 from app.models.google_asset_group import GoogleAssetGroup
 from app.models.metrics import MetricsCache
+from app.models.user import User
 
 router = APIRouter()
 
@@ -54,10 +57,16 @@ def list_google_campaigns(
     account_id: str | None = Query(None),
     limit: int = Query(50, le=200),
     offset: int = Query(0),
+    current_user: User = Depends(require_section("google_ads")),
     db: Session = Depends(get_db),
 ):
     """List all Google Ads campaigns."""
     try:
+        ok, scoped_ids, err = scoped_account_ids(
+            db, current_user, "google_ads", requested_account_id=account_id
+        )
+        if not ok:
+            return _err(err, 403)
         q = db.query(Campaign).filter(Campaign.platform == "google")
         if campaign_type:
             q = q.filter(Campaign.objective == campaign_type)
@@ -65,6 +74,8 @@ def list_google_campaigns(
             q = q.filter(Campaign.status == status)
         if account_id:
             q = q.filter(Campaign.account_id == account_id)
+        elif scoped_ids is not None:
+            q = q.filter(Campaign.account_id.in_(scoped_ids or ["__no_match__"]))
 
         total = q.count()
         campaigns = q.order_by(Campaign.name).offset(offset).limit(limit).all()
@@ -93,7 +104,11 @@ def list_google_campaigns(
 
 
 @router.get("/google/campaigns/{campaign_id}")
-def get_google_campaign(campaign_id: str, db: Session = Depends(get_db)):
+def get_google_campaign(
+    campaign_id: str,
+    current_user: User = Depends(require_section("google_ads")),
+    db: Session = Depends(get_db),
+):
     """Get Google campaign detail."""
     try:
         campaign = (
@@ -103,6 +118,11 @@ def get_google_campaign(campaign_id: str, db: Session = Depends(get_db)):
         )
         if not campaign:
             return _err("Campaign not found", 404)
+        ok, _ids, err = scoped_account_ids(
+            db, current_user, "google_ads", requested_account_id=campaign.account_id
+        )
+        if not ok:
+            return _err(err, 403)
 
         return _ok({
             "id": campaign.id,
@@ -122,9 +142,20 @@ def get_google_campaign(campaign_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/google/campaigns/{campaign_id}/ad-groups")
-def get_campaign_ad_groups(campaign_id: str, db: Session = Depends(get_db)):
+def get_campaign_ad_groups(
+    campaign_id: str,
+    current_user: User = Depends(require_section("google_ads")),
+    db: Session = Depends(get_db),
+):
     """Get ad groups for a Google Search campaign."""
     try:
+        campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+        if campaign:
+            ok, _ids, err = scoped_account_ids(
+                db, current_user, "google_ads", requested_account_id=campaign.account_id
+            )
+            if not ok:
+                return _err(err, 403)
         ad_groups = (
             db.query(AdSet)
             .filter(AdSet.campaign_id == campaign_id, AdSet.platform == "google")
@@ -152,10 +183,18 @@ def get_campaign_metrics(
     campaign_id: str,
     date_from: str | None = Query(None),
     date_to: str | None = Query(None),
+    current_user: User = Depends(require_section("google_ads")),
     db: Session = Depends(get_db),
 ):
     """Get metrics for a Google campaign."""
     try:
+        campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+        if campaign:
+            ok, _ids, err = scoped_account_ids(
+                db, current_user, "google_ads", requested_account_id=campaign.account_id
+            )
+            if not ok:
+                return _err(err, 403)
         q = db.query(MetricsCache).filter(
             MetricsCache.campaign_id == campaign_id,
             MetricsCache.platform == "google",
@@ -198,6 +237,7 @@ def list_asset_groups(
     status: str | None = Query(None),
     limit: int = Query(50, le=200),
     offset: int = Query(0),
+    current_user: User = Depends(require_section("google_ads")),
     db: Session = Depends(get_db),
 ):
     """List all PMax asset groups."""
@@ -236,7 +276,11 @@ def list_asset_groups(
 
 
 @router.get("/google/asset-groups/{group_id}")
-def get_asset_group(group_id: str, db: Session = Depends(get_db)):
+def get_asset_group(
+    group_id: str,
+    current_user: User = Depends(require_section("google_ads")),
+    db: Session = Depends(get_db),
+):
     """Get asset group detail with all assets."""
     try:
         group = db.query(GoogleAssetGroup).filter(GoogleAssetGroup.id == group_id).first()
@@ -274,7 +318,11 @@ def get_asset_group(group_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/google/asset-groups/{group_id}/assets")
-def list_assets(group_id: str, db: Session = Depends(get_db)):
+def list_assets(
+    group_id: str,
+    current_user: User = Depends(require_section("google_ads")),
+    db: Session = Depends(get_db),
+):
     """List assets for an asset group."""
     try:
         assets = (
@@ -305,7 +353,11 @@ def list_assets(group_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/google/ads/{ad_id}")
-def get_google_ad(ad_id: str, db: Session = Depends(get_db)):
+def get_google_ad(
+    ad_id: str,
+    current_user: User = Depends(require_section("google_ads")),
+    db: Session = Depends(get_db),
+):
     """Get a single Google ad detail (RSA with headlines/descriptions)."""
     try:
         ad = (
@@ -338,6 +390,7 @@ def get_google_ad(ad_id: str, db: Session = Depends(get_db)):
 @router.post("/google/sync")
 def trigger_google_sync(
     account_id: str | None = Query(None, description="Sync specific account only"),
+    current_user: User = Depends(require_section("google_ads", "edit")),
     db: Session = Depends(get_db),
 ):
     """Trigger a manual Google Ads sync."""
@@ -376,6 +429,7 @@ def trigger_google_sync(
 def google_dashboard(
     date_from: str | None = Query(None),
     date_to: str | None = Query(None),
+    current_user: User = Depends(require_section("google_ads")),
     db: Session = Depends(get_db),
 ):
     """Get Google Ads dashboard KPIs."""
@@ -447,7 +501,11 @@ def google_dashboard(
 
 
 @router.get("/google/ad-groups/{ad_group_id}/ads")
-def list_ad_group_ads(ad_group_id: str, db: Session = Depends(get_db)):
+def list_ad_group_ads(
+    ad_group_id: str,
+    current_user: User = Depends(require_section("google_ads")),
+    db: Session = Depends(get_db),
+):
     """List RSA ads for a Google ad group."""
     try:
         ads = (
@@ -514,7 +572,11 @@ def _log_action(
 
 
 @router.post("/google/campaigns/{campaign_id}/pause")
-def pause_google_campaign(campaign_id: str, db: Session = Depends(get_db)):
+def pause_google_campaign(
+    campaign_id: str,
+    current_user: User = Depends(require_section("google_ads", "edit")),
+    db: Session = Depends(get_db),
+):
     """Pause a Google Ads campaign."""
     try:
         from app.services.google_actions import pause_campaign
@@ -541,7 +603,11 @@ def pause_google_campaign(campaign_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/google/campaigns/{campaign_id}/enable")
-def enable_google_campaign(campaign_id: str, db: Session = Depends(get_db)):
+def enable_google_campaign(
+    campaign_id: str,
+    current_user: User = Depends(require_section("google_ads", "edit")),
+    db: Session = Depends(get_db),
+):
     """Enable a Google Ads campaign."""
     try:
         from app.services.google_actions import enable_campaign
@@ -571,6 +637,7 @@ def enable_google_campaign(campaign_id: str, db: Session = Depends(get_db)):
 def update_google_campaign_budget(
     campaign_id: str,
     body: dict = Body(...),
+    current_user: User = Depends(require_section("google_ads", "edit")),
     db: Session = Depends(get_db),
 ):
     """Update a Google Ads campaign's daily budget."""
@@ -612,7 +679,11 @@ def update_google_campaign_budget(
 
 
 @router.post("/google/ad-groups/{ad_group_id}/pause")
-def pause_google_ad_group(ad_group_id: str, db: Session = Depends(get_db)):
+def pause_google_ad_group(
+    ad_group_id: str,
+    current_user: User = Depends(require_section("google_ads", "edit")),
+    db: Session = Depends(get_db),
+):
     """Pause a Google Ads ad group."""
     try:
         from app.services.google_actions import pause_ad_group
@@ -639,7 +710,11 @@ def pause_google_ad_group(ad_group_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/google/ad-groups/{ad_group_id}/enable")
-def enable_google_ad_group(ad_group_id: str, db: Session = Depends(get_db)):
+def enable_google_ad_group(
+    ad_group_id: str,
+    current_user: User = Depends(require_section("google_ads", "edit")),
+    db: Session = Depends(get_db),
+):
     """Enable a Google Ads ad group."""
     try:
         from app.services.google_actions import enable_ad_group
@@ -666,7 +741,11 @@ def enable_google_ad_group(ad_group_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/google/ads/{ad_id}/pause")
-def pause_google_ad(ad_id: str, db: Session = Depends(get_db)):
+def pause_google_ad(
+    ad_id: str,
+    current_user: User = Depends(require_section("google_ads", "edit")),
+    db: Session = Depends(get_db),
+):
     """Pause a Google Ads ad."""
     try:
         from app.services.google_actions import pause_ad
@@ -697,7 +776,11 @@ def pause_google_ad(ad_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/google/ads/{ad_id}/enable")
-def enable_google_ad(ad_id: str, db: Session = Depends(get_db)):
+def enable_google_ad(
+    ad_id: str,
+    current_user: User = Depends(require_section("google_ads", "edit")),
+    db: Session = Depends(get_db),
+):
     """Enable a Google Ads ad."""
     try:
         from app.services.google_actions import enable_ad

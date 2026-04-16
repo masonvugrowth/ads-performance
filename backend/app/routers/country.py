@@ -6,11 +6,14 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.core.permissions import scoped_account_ids
 from app.database import get_db
+from app.dependencies.auth import require_section
 from app.models.account import AdAccount
 from app.models.ad_set import AdSet
 from app.models.campaign import Campaign
 from app.models.metrics import MetricsCache
+from app.models.user import User
 from app.services.country_utils import (
     calc_change,
     country_name,
@@ -36,7 +39,7 @@ def _default_date_range():
     return today - timedelta(days=6), today
 
 
-def _apply_common_filters(q, country, platform, date_from, date_to, funnel_stage, account_id):
+def _apply_common_filters(q, country, platform, date_from, date_to, funnel_stage, account_id, account_ids=None):
     """Apply common filters to a metrics query (already joined with Campaign + AdSet)."""
     # Only adset-level rows — exclude ad-level to prevent double counting
     q = q.filter(MetricsCache.ad_id.is_(None))
@@ -52,9 +55,25 @@ def _apply_common_filters(q, country, platform, date_from, date_to, funnel_stage
         q = q.filter(Campaign.funnel_stage == funnel_stage.upper())
     if account_id:
         q = q.filter(Campaign.account_id == account_id)
+    elif account_ids is not None:
+        # empty list => return no rows
+        q = q.filter(Campaign.account_id.in_(account_ids or ["__no_match__"]))
     # Only valid 2-letter country codes
     q = q.filter(AdSet.country.isnot(None), func.length(AdSet.country) == 2)
     return q
+
+
+def _resolve_scope(db, user, account_id):
+    """Resolve analytics scoping — returns (scoped_account_id, scoped_account_ids, error)."""
+    ok, scoped_ids, err = scoped_account_ids(
+        db, user, "analytics", requested_account_id=account_id
+    )
+    if not ok:
+        return None, None, err
+    if account_id:
+        # single-account filter honored
+        return account_id, None, None
+    return None, scoped_ids, None
 
 
 def _base_metrics_query(db: Session):
@@ -103,10 +122,15 @@ def country_kpi_summary(
     date_to: str = Query(None),
     funnel_stage: str = Query(None),
     account_id: str = Query(None, description="Branch filter — ad_accounts.id"),
+    current_user: User = Depends(require_section("analytics")),
     db: Session = Depends(get_db),
 ):
     """Country KPI summary with period-over-period comparison."""
     try:
+        account_id, scoped_ids, err = _resolve_scope(db, current_user, account_id)
+        if err:
+            return _api_response(error=err)
+
         # Default date range
         if not date_from or not date_to:
             df, dt = _default_date_range()
@@ -119,12 +143,12 @@ def country_kpi_summary(
 
         # Current period
         q = _base_metrics_query(db)
-        q = _apply_common_filters(q, country, platform, df, dt, funnel_stage, account_id)
+        q = _apply_common_filters(q, country, platform, df, dt, funnel_stage, account_id, scoped_ids)
         rows = q.group_by(AdSet.country).all()
 
         # Previous period
         q_prev = _base_metrics_query(db)
-        q_prev = _apply_common_filters(q_prev, country, platform, prev_from, prev_to, funnel_stage, account_id)
+        q_prev = _apply_common_filters(q_prev, country, platform, prev_from, prev_to, funnel_stage, account_id, scoped_ids)
         prev_rows = q_prev.group_by(AdSet.country).all()
         prev_map = {r.country: r for r in prev_rows}
 
@@ -166,10 +190,15 @@ def ta_breakdown(
     date_from: str = Query(None),
     date_to: str = Query(None),
     account_id: str = Query(None),
+    current_user: User = Depends(require_section("analytics")),
     db: Session = Depends(get_db),
 ):
     """TA x Funnel Stage breakdown for a specific country, with period comparison."""
     try:
+        account_id, scoped_ids, err = _resolve_scope(db, current_user, account_id)
+        if err:
+            return _api_response(error=err)
+
         if not date_from or not date_to:
             df, dt = _default_date_range()
             date_from = date_from or df.isoformat()
@@ -200,6 +229,8 @@ def ta_breakdown(
                 q = q.filter(MetricsCache.platform == platform)
             if account_id:
                 q = q.filter(Campaign.account_id == account_id)
+            elif scoped_ids is not None:
+                q = q.filter(Campaign.account_id.in_(scoped_ids or ["__no_match__"]))
             return q.group_by(Campaign.ta, Campaign.funnel_stage).all()
 
         rows = _query_ta(df, dt)
@@ -258,10 +289,15 @@ def country_funnel(
     date_from: str = Query(None),
     date_to: str = Query(None),
     account_id: str = Query(None),
+    current_user: User = Depends(require_section("analytics")),
     db: Session = Depends(get_db),
 ):
     """Conversion funnel filterable by country, TA, funnel stage, branch."""
     try:
+        account_id, scoped_ids, err = _resolve_scope(db, current_user, account_id)
+        if err:
+            return _api_response(error=err)
+
         if not date_from or not date_to:
             df, dt = _default_date_range()
             date_from = date_from or df.isoformat()
@@ -295,6 +331,8 @@ def country_funnel(
                 q = q.filter(MetricsCache.platform == platform)
             if account_id:
                 q = q.filter(Campaign.account_id == account_id)
+            elif scoped_ids is not None:
+                q = q.filter(Campaign.account_id.in_(scoped_ids or ["__no_match__"]))
             return q.first()
 
         row = _query_funnel(df, dt)
@@ -333,10 +371,15 @@ def country_comparison(
     date_from: str = Query(None),
     date_to: str = Query(None),
     account_id: str = Query(None),
+    current_user: User = Depends(require_section("analytics")),
     db: Session = Depends(get_db),
 ):
     """Side-by-side comparison across all countries with period change."""
     try:
+        account_id, scoped_ids, err = _resolve_scope(db, current_user, account_id)
+        if err:
+            return _api_response(error=err)
+
         if not date_from or not date_to:
             df, dt = _default_date_range()
             date_from = date_from or df.isoformat()
@@ -359,6 +402,8 @@ def country_comparison(
                 q = q.filter(Campaign.ta == ta)
             if account_id:
                 q = q.filter(Campaign.account_id == account_id)
+            elif scoped_ids is not None:
+                q = q.filter(Campaign.account_id.in_(scoped_ids or ["__no_match__"]))
             return q.group_by(AdSet.country).order_by(func.sum(MetricsCache.spend).desc()).all()
 
         rows = _query_countries(df, dt)
@@ -390,10 +435,15 @@ def country_comparison(
 @router.get("/dashboard/country/countries")
 def list_countries(
     account_id: str = Query(None),
+    current_user: User = Depends(require_section("analytics")),
     db: Session = Depends(get_db),
 ):
     """List available countries with display names."""
     try:
+        account_id, scoped_ids, err = _resolve_scope(db, current_user, account_id)
+        if err:
+            return _api_response(error=err)
+
         q = (
             db.query(AdSet.country, func.count(AdSet.id).label("adset_count"))
             .filter(
@@ -404,6 +454,8 @@ def list_countries(
         )
         if account_id:
             q = q.filter(AdSet.account_id == account_id)
+        elif scoped_ids is not None:
+            q = q.filter(AdSet.account_id.in_(scoped_ids or ["__no_match__"]))
 
         rows = q.group_by(AdSet.country).order_by(AdSet.country).all()
 

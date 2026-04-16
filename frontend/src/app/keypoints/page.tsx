@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { Plus, X, Trash2 } from 'lucide-react'
+import { useAuth } from '@/components/AuthContext'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
@@ -17,6 +18,8 @@ const CAT_COLORS: Record<string, string> = {
 }
 
 export default function KeypointsPage() {
+  const { canEditSection } = useAuth()
+  const canEdit = canEditSection('meta_ads')
   const [keypoints, setKeypoints] = useState<Keypoint[]>([])
   const [accounts, setAccounts] = useState<Account[]>([])
   const [loading, setLoading] = useState(true)
@@ -29,11 +32,11 @@ export default function KeypointsPage() {
 
   const fetch_kp = () => {
     setLoading(true)
-    fetch(`${API_BASE}/api/keypoints`).then(r => r.json()).then(d => { if (d.success) setKeypoints(d.data) }).catch(() => {}).finally(() => setLoading(false))
+    fetch(`${API_BASE}/api/keypoints`, { credentials: 'include' }).then(r => r.json()).then(d => { if (d.success) setKeypoints(d.data) }).catch(() => {}).finally(() => setLoading(false))
   }
 
   useEffect(() => {
-    fetch(`${API_BASE}/api/accounts`).then(r => r.json()).then(d => { if (d.success) setAccounts(d.data.filter((a: any) => a.platform === 'meta')) }).catch(() => {})
+    fetch(`${API_BASE}/api/accounts`, { credentials: 'include' }).then(r => r.json()).then(d => { if (d.success) setAccounts(d.data.filter((a: any) => a.platform === 'meta')) }).catch(() => {})
     fetch_kp()
   }, [])
 
@@ -41,12 +44,13 @@ export default function KeypointsPage() {
     if (!formBranch || !formTitle) return
     fetch(`${API_BASE}/api/keypoints`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({ branch_id: formBranch, category: formCategory, title: formTitle }),
     }).then(r => r.json()).then(d => { if (d.success) { setShowCreate(false); setFormTitle(''); fetch_kp() } })
   }
 
   const deleteKp = (id: string) => {
-    fetch(`${API_BASE}/api/keypoints/${id}`, { method: 'DELETE' }).then(() => fetch_kp())
+    fetch(`${API_BASE}/api/keypoints/${id}`, { method: 'DELETE', credentials: 'include' }).then(() => fetch_kp())
   }
 
   // Group by branch
@@ -62,9 +66,11 @@ export default function KeypointsPage() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold text-gray-900">Branch Keypoints</h1>
-        <button onClick={() => setShowCreate(true)} className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700">
-          <Plus className="w-4 h-4" /> Add Keypoint
-        </button>
+        {canEdit && (
+          <button onClick={() => setShowCreate(true)} className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700">
+            <Plus className="w-4 h-4" /> Add Keypoint
+          </button>
+        )}
       </div>
 
       {showCreate && (
@@ -101,7 +107,9 @@ export default function KeypointsPage() {
                         </div>
                       )}
                     </div>
-                    <button onClick={() => deleteKp(kp.id)} className="text-gray-400 hover:text-red-500 shrink-0"><Trash2 className="w-4 h-4" /></button>
+                    {canEdit && (
+                      <button onClick={() => deleteKp(kp.id)} className="text-gray-400 hover:text-red-500 shrink-0"><Trash2 className="w-4 h-4" /></button>
+                    )}
                   </div>
                 ))}
               </div>

@@ -6,9 +6,15 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from sqlalchemy import or_
+
+from app.core.permissions import accessible_branches, is_admin
 from app.database import get_db
+from app.dependencies.auth import get_current_user, require_section
 from app.models.booking_match import BookingMatch
 from app.models.reservation import Reservation
+from app.models.user import User
+from app.routers.accounts import BRANCH_ACCOUNT_MAP, branch_name_patterns
 from app.services.booking_match_service import run_matching
 from app.services.reservation_sync import sync_reservations
 
@@ -27,6 +33,37 @@ def _api_response(data=None, error=None):
 def _default_date_range() -> tuple[date, date]:
     today = date.today()
     return today - timedelta(days=29), today
+
+
+def _apply_branch_scope(q, column, user, db, requested_branch: str | None):
+    """Restrict a query to the user's accessible branches for analytics.
+
+    Returns (ok, query, error). When ok=False, caller should return _api_response(error=err).
+    When admin: no scope applied beyond the explicit `requested_branch` filter.
+    """
+    if requested_branch:
+        # Explicit branch from client — validate against permissions
+        if not is_admin(user):
+            allowed = accessible_branches(db, user, "analytics") or []
+            if requested_branch not in allowed and requested_branch not in BRANCH_ACCOUNT_MAP:
+                return False, q, f"No view access to branch '{requested_branch}'"
+            if requested_branch in BRANCH_ACCOUNT_MAP and requested_branch not in allowed:
+                return False, q, f"No view access to branch '{requested_branch}'"
+        patterns = BRANCH_ACCOUNT_MAP.get(requested_branch, [requested_branch])
+        q = q.filter(or_(*[column.ilike(f"%{p}%") for p in patterns]))
+        return True, q, None
+
+    if is_admin(user):
+        return True, q, None
+
+    allowed = accessible_branches(db, user, "analytics") or []
+    if not allowed:
+        # Force empty result
+        q = q.filter(column == "__no_match__")
+        return True, q, None
+    patterns = branch_name_patterns(allowed)
+    q = q.filter(or_(*[column.ilike(f"%{p}%") for p in patterns]))
+    return True, q, None
 
 
 def _serialize_match(m: BookingMatch) -> dict:
@@ -61,6 +98,7 @@ def list_booking_matches(
     match_result: str = Query(None),
     limit: int = Query(200, le=1000),
     offset: int = Query(0),
+    current_user: User = Depends(require_section("analytics")),
     db: Session = Depends(get_db),
 ):
     """List booking matches with filters, sorted by date desc (like the Sheet)."""
@@ -77,8 +115,9 @@ def list_booking_matches(
             BookingMatch.match_date >= df,
             BookingMatch.match_date <= dt,
         )
-        if branch:
-            q = q.filter(BookingMatch.branch == branch)
+        ok, q, err = _apply_branch_scope(q, BookingMatch.branch, current_user, db, branch)
+        if not ok:
+            return _api_response(error=err)
         if channel:
             q = q.filter(BookingMatch.ads_channel == channel)
         if match_result:
@@ -103,6 +142,7 @@ def booking_matches_summary(
     date_from: str = Query(None),
     date_to: str = Query(None),
     branch: str = Query(None),
+    current_user: User = Depends(require_section("analytics")),
     db: Session = Depends(get_db),
 ):
     """KPI summary for the dashboard."""
@@ -119,8 +159,9 @@ def booking_matches_summary(
             BookingMatch.match_date >= df,
             BookingMatch.match_date <= dt,
         )
-        if branch:
-            base = base.filter(BookingMatch.branch == branch)
+        ok, base, err = _apply_branch_scope(base, BookingMatch.branch, current_user, db, branch)
+        if not ok:
+            return _api_response(error=err)
 
         # Total KPIs
         total_matches = base.count()
@@ -201,6 +242,7 @@ def trigger_match_run(
     date_from: str = Query(None),
     date_to: str = Query(None),
     skip_sync: bool = Query(False, description="Skip PMS sync, only re-run matching"),
+    current_user: User = Depends(require_section("analytics", "edit")),
     db: Session = Depends(get_db),
 ):
     """Manual trigger: pull reservations from PMS, then run matching."""
@@ -235,6 +277,7 @@ def list_reservations(
     source: str = Query(None),
     limit: int = Query(200, le=1000),
     offset: int = Query(0),
+    current_user: User = Depends(require_section("analytics")),
     db: Session = Depends(get_db),
 ):
     """Raw reservations list for debugging."""
@@ -251,8 +294,9 @@ def list_reservations(
             Reservation.reservation_date >= df,
             Reservation.reservation_date <= dt,
         )
-        if branch:
-            q = q.filter(Reservation.branch.ilike(f"%{branch}%"))
+        ok, q, err = _apply_branch_scope(q, Reservation.branch, current_user, db, branch)
+        if not ok:
+            return _api_response(error=err)
         if source:
             q = q.filter(Reservation.source == source)
 

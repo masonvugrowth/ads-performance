@@ -6,10 +6,13 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.core.permissions import scoped_account_ids
 from app.database import get_db
+from app.dependencies.auth import require_section
 from app.models.account import AdAccount
 from app.models.campaign import Campaign
 from app.models.metrics import MetricsCache
+from app.models.user import User
 from app.routers.accounts import get_account_ids_for_branches
 
 router = APIRouter()
@@ -47,18 +50,28 @@ def list_campaigns(
     search: str | None = None,
     limit: int = Query(50, le=200),
     offset: int = Query(0, ge=0),
+    current_user: User = Depends(require_section("analytics")),
     db: Session = Depends(get_db),
 ):
     """List campaigns with optional filters."""
     try:
+        # Scope to the user's accessible branches for analytics
+        ok, scoped_ids, err = scoped_account_ids(
+            db, current_user, "analytics", requested_account_id=account_id
+        )
+        if not ok:
+            return _api_response(error=err)
+
         q = db.query(Campaign).join(AdAccount, Campaign.account_id == AdAccount.id)
 
         if platform:
             q = q.filter(Campaign.platform == platform)
         if status:
             q = q.filter(Campaign.status == status)
-        if account_id:
-            q = q.filter(Campaign.account_id == account_id)
+        if scoped_ids is not None:
+            if not scoped_ids:
+                return _api_response(data={"items": [], "total": 0, "limit": limit, "offset": offset})
+            q = q.filter(Campaign.account_id.in_(scoped_ids))
         if search:
             q = q.filter(Campaign.name.ilike(f"%{search}%"))
 
@@ -98,12 +111,23 @@ def list_campaigns(
 
 
 @router.get("/campaigns/{campaign_id}")
-def get_campaign(campaign_id: str, db: Session = Depends(get_db)):
+def get_campaign(
+    campaign_id: str,
+    current_user: User = Depends(require_section("analytics")),
+    db: Session = Depends(get_db),
+):
     """Get a single campaign by ID."""
     try:
         campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
         if not campaign:
             return _api_response(error="Campaign not found")
+
+        # Enforce scope: user must have analytics access to this campaign's account
+        ok, _ids, err = scoped_account_ids(
+            db, current_user, "analytics", requested_account_id=campaign.account_id
+        )
+        if not ok:
+            return _api_response(error=err)
 
         acc = db.query(AdAccount).filter(AdAccount.id == campaign.account_id).first()
 
@@ -135,6 +159,7 @@ def get_campaign_metrics(
     campaign_id: str,
     date_from: date | None = None,
     date_to: date | None = None,
+    current_user: User = Depends(require_section("analytics")),
     db: Session = Depends(get_db),
 ):
     """Get daily metrics for a specific campaign."""
@@ -142,6 +167,12 @@ def get_campaign_metrics(
         campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
         if not campaign:
             return _api_response(error="Campaign not found")
+
+        ok, _ids, err = scoped_account_ids(
+            db, current_user, "analytics", requested_account_id=campaign.account_id
+        )
+        if not ok:
+            return _api_response(error=err)
 
         q = db.query(MetricsCache).filter(MetricsCache.campaign_id == campaign_id)
         if date_from:
@@ -260,15 +291,26 @@ def get_dashboard_kpis(
     platform: str | None = None,
     account_id: str | None = None,
     branches: str | None = None,
+    current_user: User = Depends(require_section("analytics")),
     db: Session = Depends(get_db),
 ):
     """Aggregated KPIs with period-over-period comparison."""
     try:
-        # Resolve branches to account IDs
-        branch_account_ids = None
-        if branches:
-            branch_list = [b.strip() for b in branches.split(",") if b.strip()]
-            branch_account_ids = get_account_ids_for_branches(db, branch_list)
+        # Resolve + scope requested branches/account_id to the user's permissions.
+        branch_list = [b.strip() for b in branches.split(",") if b.strip()] if branches else None
+        ok, scoped_ids, err = scoped_account_ids(
+            db, current_user, "analytics",
+            requested_account_id=account_id,
+            requested_branches=branch_list,
+        )
+        if not ok:
+            return _api_response(error=err)
+        # When admin + no filter, scoped_ids is None -> treat as "all". Otherwise use the scoped list.
+        branch_account_ids = scoped_ids
+        # If the explicit account_id was specified, treat it as the canonical filter
+        if account_id and scoped_ids:
+            account_id = scoped_ids[0]
+            branch_account_ids = None
 
         # Default: current period = all available data (last 7 days)
         if date_to is None:
@@ -310,15 +352,23 @@ def get_dashboard_daily(
     platform: str | None = None,
     account_id: str | None = None,
     branches: str | None = None,
+    current_user: User = Depends(require_section("analytics")),
     db: Session = Depends(get_db),
 ):
     """Daily aggregated metrics for dashboard charts. Converts to VND when all branches."""
     try:
-        # Resolve branches to account IDs
-        branch_account_ids = None
-        if branches:
-            branch_list = [b.strip() for b in branches.split(",") if b.strip()]
-            branch_account_ids = get_account_ids_for_branches(db, branch_list)
+        branch_list = [b.strip() for b in branches.split(",") if b.strip()] if branches else None
+        ok, scoped_ids, err = scoped_account_ids(
+            db, current_user, "analytics",
+            requested_account_id=account_id,
+            requested_branches=branch_list,
+        )
+        if not ok:
+            return _api_response(error=err)
+        branch_account_ids = scoped_ids
+        if account_id and scoped_ids:
+            account_id = scoped_ids[0]
+            branch_account_ids = None
 
         has_filter = account_id is not None or (branch_account_ids is not None and len(branch_account_ids) > 0)
         convert_to_vnd = not has_filter
@@ -404,15 +454,18 @@ def get_dashboard_by_account(
     date_to: date | None = None,
     platform: str | None = None,
     branches: str | None = None,
+    current_user: User = Depends(require_section("analytics")),
     db: Session = Depends(get_db),
 ):
     """Metrics broken down by account (branch) for dashboard."""
     try:
-        # Resolve branches to account IDs
-        branch_account_ids = None
-        if branches:
-            branch_list = [b.strip() for b in branches.split(",") if b.strip()]
-            branch_account_ids = get_account_ids_for_branches(db, branch_list)
+        branch_list = [b.strip() for b in branches.split(",") if b.strip()] if branches else None
+        ok, scoped_ids, err = scoped_account_ids(
+            db, current_user, "analytics", requested_branches=branch_list
+        )
+        if not ok:
+            return _api_response(error=err)
+        branch_account_ids = scoped_ids
 
         q = db.query(
             Campaign.account_id,
@@ -512,6 +565,7 @@ def get_dashboard_funnel(
     platform: str | None = None,
     account_id: str | None = None,
     branches: str | None = None,
+    current_user: User = Depends(require_section("analytics")),
     db: Session = Depends(get_db),
 ):
     """Funnel metrics: Impression → Clicks → Search → Add to cart → Checkout → Booking.
@@ -519,11 +573,18 @@ def get_dashboard_funnel(
     Returns current + previous period with % change and drop-off rates.
     """
     try:
-        # Resolve branches to account IDs
-        branch_account_ids = None
-        if branches:
-            branch_list = [b.strip() for b in branches.split(",") if b.strip()]
-            branch_account_ids = get_account_ids_for_branches(db, branch_list)
+        branch_list = [b.strip() for b in branches.split(",") if b.strip()] if branches else None
+        ok, scoped_ids, err = scoped_account_ids(
+            db, current_user, "analytics",
+            requested_account_id=account_id,
+            requested_branches=branch_list,
+        )
+        if not ok:
+            return _api_response(error=err)
+        branch_account_ids = scoped_ids
+        if account_id and scoped_ids:
+            account_id = scoped_ids[0]
+            branch_account_ids = None
 
         if date_to is None:
             date_to = date.today()

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { useAuth } from '@/components/AuthContext'
+import PermissionMatrix from '@/components/PermissionMatrix'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
@@ -24,8 +25,9 @@ export default function UsersPage() {
   const [form, setForm] = useState({ email: '', full_name: '', password: '', roles: ['creator'] })
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState('')
+  const [permsTarget, setPermsTarget] = useState<UserItem | null>(null)
 
-  const isAdmin = user?.roles?.includes('admin')
+  const isAdmin = user?.is_admin || user?.roles?.includes('admin')
 
   const fetchUsers = () => {
     fetch(`${API_BASE}/api/users`, { credentials: 'include' })
@@ -202,18 +204,34 @@ export default function UsersPage() {
                     </span>
                   </td>
                   <td className="px-4 py-3">
-                    <button
-                      onClick={() => toggleActive(u.id, u.is_active)}
-                      className="text-xs text-gray-500 hover:text-gray-700"
-                    >
-                      {u.is_active ? 'Deactivate' : 'Activate'}
-                    </button>
+                    <div className="flex gap-2 items-center">
+                      <button
+                        onClick={() => setPermsTarget(u)}
+                        className="text-xs px-2 py-1 rounded-md bg-indigo-50 text-indigo-700 hover:bg-indigo-100 font-medium"
+                      >
+                        Permissions
+                      </button>
+                      <button
+                        onClick={() => toggleActive(u.id, u.is_active)}
+                        className="text-xs text-gray-500 hover:text-gray-700"
+                      >
+                        {u.is_active ? 'Deactivate' : 'Activate'}
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+      )}
+
+      {permsTarget && (
+        <PermissionMatrix
+          userId={permsTarget.id}
+          userEmail={permsTarget.email}
+          onClose={() => setPermsTarget(null)}
+        />
       )}
     </div>
   )

@@ -4,8 +4,12 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.core.permissions import BRANCHES, SECTIONS, is_admin
 from app.database import get_db
+from app.dependencies.auth import get_current_user
 from app.models.account import AdAccount
+from app.models.user import User
+from app.models.user_permission import UserPermission
 
 router = APIRouter()
 
@@ -40,9 +44,22 @@ def _api_response(data=None, error=None):
 
 
 @router.get("/accounts")
-def list_accounts(db: Session = Depends(get_db)):
+def list_accounts(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     try:
         accounts = db.query(AdAccount).filter(AdAccount.is_active.is_(True)).all()
+        # Non-admins only see accounts from branches they have any permission on
+        if not is_admin(current_user):
+            user_branches = {
+                row[0]
+                for row in db.query(UserPermission.branch)
+                .filter(UserPermission.user_id == current_user.id)
+                .all()
+            }
+            allowed_ids = set(get_account_ids_for_branches(db, list(user_branches)))
+            accounts = [a for a in accounts if str(a.id) in allowed_ids]
         return _api_response(data=[
             {
                 "id": str(a.id),
@@ -93,13 +110,44 @@ def get_account_ids_for_branches(db: Session, branches: list[str]) -> list[str]:
     return list(set(account_ids))
 
 
+def branch_name_patterns(branches: list[str]) -> list[str]:
+    """Flatten canonical branch names to the ilike-ready substring patterns used
+    by BookingMatch / Reservation / BudgetPlan rows (which may store variants like
+    'MEANDER Saigon')."""
+    out: list[str] = []
+    for b in branches:
+        out.extend(BRANCH_ACCOUNT_MAP.get(b, [b]))
+    return out
+
+
 @router.get("/branches")
-def list_branches(db: Session = Depends(get_db)):
-    """Return available branches with their currencies."""
+def list_branches(
+    section: str | None = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return branches available to the current user.
+
+    Admin: all branches that have at least one active account.
+    Non-admin: only branches the user has any permission for (optionally filtered by section).
+    """
     try:
+        if is_admin(current_user):
+            allowed = set(BRANCH_ACCOUNT_MAP.keys())
+        else:
+            q = db.query(UserPermission.branch).filter(
+                UserPermission.user_id == current_user.id
+            )
+            if section:
+                if section not in SECTIONS:
+                    return _api_response(error=f"Invalid section: {section}")
+                q = q.filter(UserPermission.section == section)
+            allowed = {row[0] for row in q.all()}
+
         branches = []
         for branch, patterns in BRANCH_ACCOUNT_MAP.items():
-            # Check if branch has any active accounts
+            if branch not in allowed:
+                continue
             has_accounts = False
             for pattern in patterns:
                 count = db.query(AdAccount.id).filter(
@@ -120,7 +168,14 @@ def list_branches(db: Session = Depends(get_db)):
 
 
 @router.post("/accounts")
-def create_account(body: AccountCreate, db: Session = Depends(get_db)):
+def create_account(
+    body: AccountCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    # Only admins can create ad accounts
+    if not is_admin(current_user):
+        return _api_response(error="Only admins can create ad accounts")
     try:
         # Check if account already exists
         existing = (

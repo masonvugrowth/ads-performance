@@ -1,4 +1,5 @@
 from sqlalchemy import Boolean, Column, DateTime, String, Text
+from sqlalchemy.orm import relationship
 
 from app.models.base import Base, JSONType, TimestampMixin, UUIDType
 
@@ -13,3 +14,10 @@ class User(Base, TimestampMixin):
     is_active = Column(Boolean, nullable=False, default=True)
     last_login_at = Column(DateTime(timezone=True), nullable=True)
     notification_email = Column(Boolean, nullable=False, default=True)
+
+    permissions = relationship(
+        "UserPermission",
+        backref="user",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )

@@ -6,10 +6,13 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.core.permissions import scoped_account_ids
 from app.database import get_db
+from app.dependencies.auth import require_section
 from app.models.action_log import ActionLog
 from app.models.campaign import Campaign
 from app.models.rule import AutomationRule
+from app.models.user import User
 from app.services.rule_engine import evaluate_all_rules, evaluate_rule
 
 router = APIRouter()
@@ -83,14 +86,25 @@ def _rule_to_dict(r: AutomationRule) -> dict:
 def list_rules(
     platform: str | None = None,
     is_active: bool | None = None,
+    current_user: User = Depends(require_section("automation")),
     db: Session = Depends(get_db),
 ):
     try:
+        ok, scoped_ids, err = scoped_account_ids(db, current_user, "automation")
+        if not ok:
+            return _api_response(error=err)
+
         q = db.query(AutomationRule)
         if platform:
             q = q.filter(AutomationRule.platform == platform)
         if is_active is not None:
             q = q.filter(AutomationRule.is_active == is_active)
+        if scoped_ids is not None:
+            # Allow rules with no account_id (global) + rules on allowed accounts
+            q = q.filter(
+                (AutomationRule.account_id.is_(None))
+                | (AutomationRule.account_id.in_(scoped_ids or ["__no_match__"]))
+            )
 
         rules = q.order_by(AutomationRule.created_at.desc()).all()
         return _api_response(data=[_rule_to_dict(r) for r in rules])
@@ -99,8 +113,19 @@ def list_rules(
 
 
 @router.post("/rules")
-def create_rule(body: RuleCreate, db: Session = Depends(get_db)):
+def create_rule(
+    body: RuleCreate,
+    current_user: User = Depends(require_section("automation", "edit")),
+    db: Session = Depends(get_db),
+):
     try:
+        if body.account_id:
+            ok, _ids, err = scoped_account_ids(
+                db, current_user, "automation",
+                requested_account_id=body.account_id, min_level="edit",
+            )
+            if not ok:
+                return _api_response(error=err)
         rule = AutomationRule(
             name=body.name,
             platform=body.platform,
@@ -121,22 +146,44 @@ def create_rule(body: RuleCreate, db: Session = Depends(get_db)):
 
 
 @router.get("/rules/{rule_id}")
-def get_rule(rule_id: str, db: Session = Depends(get_db)):
+def get_rule(
+    rule_id: str,
+    current_user: User = Depends(require_section("automation")),
+    db: Session = Depends(get_db),
+):
     try:
         rule = db.query(AutomationRule).filter(AutomationRule.id == rule_id).first()
         if not rule:
             return _api_response(error="Rule not found")
+        if rule.account_id:
+            ok, _ids, err = scoped_account_ids(
+                db, current_user, "automation", requested_account_id=rule.account_id
+            )
+            if not ok:
+                return _api_response(error=err)
         return _api_response(data=_rule_to_dict(rule))
     except Exception as e:
         return _api_response(error=str(e))
 
 
 @router.put("/rules/{rule_id}")
-def update_rule(rule_id: str, body: RuleUpdate, db: Session = Depends(get_db)):
+def update_rule(
+    rule_id: str,
+    body: RuleUpdate,
+    current_user: User = Depends(require_section("automation", "edit")),
+    db: Session = Depends(get_db),
+):
     try:
         rule = db.query(AutomationRule).filter(AutomationRule.id == rule_id).first()
         if not rule:
             return _api_response(error="Rule not found")
+        if rule.account_id:
+            ok, _ids, err = scoped_account_ids(
+                db, current_user, "automation",
+                requested_account_id=rule.account_id, min_level="edit",
+            )
+            if not ok:
+                return _api_response(error=err)
 
         if body.name is not None:
             rule.name = body.name
@@ -165,12 +212,23 @@ def update_rule(rule_id: str, body: RuleUpdate, db: Session = Depends(get_db)):
 
 
 @router.delete("/rules/{rule_id}")
-def delete_rule(rule_id: str, db: Session = Depends(get_db)):
+def delete_rule(
+    rule_id: str,
+    current_user: User = Depends(require_section("automation", "edit")),
+    db: Session = Depends(get_db),
+):
     """Soft delete: set is_active = False."""
     try:
         rule = db.query(AutomationRule).filter(AutomationRule.id == rule_id).first()
         if not rule:
             return _api_response(error="Rule not found")
+        if rule.account_id:
+            ok, _ids, err = scoped_account_ids(
+                db, current_user, "automation",
+                requested_account_id=rule.account_id, min_level="edit",
+            )
+            if not ok:
+                return _api_response(error=err)
         rule.is_active = False
         rule.updated_at = datetime.now(timezone.utc)
         db.commit()
@@ -183,7 +241,11 @@ def delete_rule(rule_id: str, db: Session = Depends(get_db)):
 # ---------- Rule Evaluation ----------
 
 @router.post("/rules/{rule_id}/evaluate")
-def evaluate_single_rule(rule_id: str, db: Session = Depends(get_db)):
+def evaluate_single_rule(
+    rule_id: str,
+    current_user: User = Depends(require_section("automation", "edit")),
+    db: Session = Depends(get_db),
+):
     """Manually trigger evaluation for one rule."""
     try:
         rule = db.query(AutomationRule).filter(AutomationRule.id == rule_id).first()
@@ -201,7 +263,10 @@ def evaluate_single_rule(rule_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/rules/evaluate-all")
-def evaluate_all(db: Session = Depends(get_db)):
+def evaluate_all(
+    current_user: User = Depends(require_section("automation", "edit")),
+    db: Session = Depends(get_db),
+):
     """Manually trigger evaluation for all active rules."""
     try:
         results = evaluate_all_rules(db)
@@ -224,10 +289,28 @@ def list_logs(
     date_to: date | None = None,
     limit: int = Query(50, le=200),
     offset: int = Query(0, ge=0),
+    current_user: User = Depends(require_section("automation")),
     db: Session = Depends(get_db),
 ):
     try:
+        ok, scoped_ids, err = scoped_account_ids(db, current_user, "automation")
+        if not ok:
+            return _api_response(error=err)
         q = db.query(ActionLog)
+        if scoped_ids is not None:
+            # Only show logs for campaigns in user's accessible accounts
+            allowed_campaign_ids = [
+                c.id for c in db.query(Campaign.id).filter(
+                    Campaign.account_id.in_(scoped_ids or ["__no_match__"])
+                ).all()
+            ]
+            if allowed_campaign_ids:
+                q = q.filter(
+                    (ActionLog.campaign_id.in_(allowed_campaign_ids))
+                    | (ActionLog.campaign_id.is_(None))
+                )
+            else:
+                q = q.filter(ActionLog.id == "__no_match__")
         if rule_id:
             q = q.filter(ActionLog.rule_id == rule_id)
         if campaign_id:

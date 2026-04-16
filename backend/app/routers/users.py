@@ -4,9 +4,11 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.core.permissions import BRANCHES, LEVELS, SECTIONS, permission_dict
 from app.database import get_db
 from app.dependencies.auth import require_role
 from app.models.user import User
+from app.models.user_permission import UserPermission
 from app.services.auth_service import hash_password
 
 router = APIRouter()
@@ -49,6 +51,16 @@ class UpdateUserRequest(BaseModel):
     roles: list[str] | None = None
     is_active: bool | None = None
     notification_email: bool | None = None
+
+
+class PermissionItem(BaseModel):
+    branch: str
+    section: str
+    level: str
+
+
+class ReplacePermissionsRequest(BaseModel):
+    items: list[PermissionItem]
 
 
 # ── Endpoints ────────────────────────────────────────────────
@@ -162,6 +174,87 @@ def delete_user(
         user.is_active = False
         db.commit()
         return _api_response(data={"message": f"User {user.email} deactivated"})
+    except Exception as e:
+        db.rollback()
+        return _api_response(error=str(e))
+
+
+# ── Permission management ────────────────────────────────────
+# Admin-only. Permissions apply when user is NOT admin — admins bypass.
+
+
+@router.get("/users/{user_id}/permissions")
+def get_user_permissions(
+    user_id: str,
+    current_user: User = Depends(require_role(["admin"])),
+    db: Session = Depends(get_db),
+):
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            return _api_response(error="User not found")
+        return _api_response(
+            data={
+                "user": _user_to_dict(user),
+                **permission_dict(user, user.permissions or []),
+                "available_branches": BRANCHES,
+                "available_sections": SECTIONS,
+                "available_levels": LEVELS,
+            }
+        )
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
+@router.put("/users/{user_id}/permissions")
+def replace_user_permissions(
+    user_id: str,
+    body: ReplacePermissionsRequest,
+    current_user: User = Depends(require_role(["admin"])),
+    db: Session = Depends(get_db),
+):
+    """Replace the user's full permission set in one transaction.
+
+    Validation: branch/section/level must be in the canonical constants.
+    Strategy: delete everything for this user, insert the new rows.
+    """
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            return _api_response(error="User not found")
+
+        # Validate + dedupe by (branch, section) keeping the last value
+        seen: dict[tuple[str, str], str] = {}
+        for item in body.items:
+            if item.branch not in BRANCHES:
+                return _api_response(error=f"Invalid branch: {item.branch}")
+            if item.section not in SECTIONS:
+                return _api_response(error=f"Invalid section: {item.section}")
+            if item.level not in LEVELS:
+                return _api_response(error=f"Invalid level: {item.level}")
+            seen[(item.branch, item.section)] = item.level
+
+        # Wipe + reinsert atomically
+        db.query(UserPermission).filter(UserPermission.user_id == user.id).delete(
+            synchronize_session=False
+        )
+        for (branch, section), level in seen.items():
+            db.add(
+                UserPermission(
+                    user_id=user.id,
+                    branch=branch,
+                    section=section,
+                    level=level,
+                )
+            )
+        db.commit()
+        db.refresh(user)
+        return _api_response(
+            data={
+                "user": _user_to_dict(user),
+                **permission_dict(user, user.permissions or []),
+            }
+        )
     except Exception as e:
         db.rollback()
         return _api_response(error=str(e))

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { Plus, X } from 'lucide-react'
+import { useAuth } from '@/components/AuthContext'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
@@ -33,6 +34,8 @@ const ANGLE_TYPE_LIST = [
 ]
 
 export default function AnglesPage() {
+  const { canEditSection } = useAuth()
+  const canEdit = canEditSection('meta_ads')
   const [angles, setAngles] = useState<Angle[]>([])
   const [accounts, setAccounts] = useState<Account[]>([])
   const [loading, setLoading] = useState(true)
@@ -52,31 +55,34 @@ export default function AnglesPage() {
     const p = new URLSearchParams()
     if (fStatus) p.set('status', fStatus)
     if (fBranch) p.set('branch_id', fBranch)
-    fetch(`${API_BASE}/api/angles?${p}`)
+    fetch(`${API_BASE}/api/angles?${p}`, { credentials: 'include' })
       .then(r => r.json()).then(d => { if (d.success) setAngles(d.data) }).catch(() => {}).finally(() => setLoading(false))
   }
 
-  useEffect(() => { fetch(`${API_BASE}/api/accounts`).then(r => r.json()).then(d => { if (d.success) setAccounts(d.data.filter((a: Account) => a.platform === 'meta')) }).catch(() => {}) }, [])
+  useEffect(() => { fetch(`${API_BASE}/api/accounts`, { credentials: 'include' }).then(r => r.json()).then(d => { if (d.success) setAccounts(d.data.filter((a: Account) => a.platform === 'meta')) }).catch(() => {}) }, [])
   useEffect(() => { fetchAngles() }, [fStatus, fBranch])
 
   const handleCreate = () => {
     fetch(`${API_BASE}/api/angles`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({ branch_id: formBranch || null, angle_type: formType, angle_explain: formExplain, status: 'TEST' }),
     }).then(r => r.json()).then(d => { if (d.success) { setShowCreate(false); setFormExplain(''); fetchAngles() } })
   }
 
   const updateStatus = (angleId: string, s: string) => {
-    fetch(`${API_BASE}/api/angles/${angleId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: s }) }).then(() => fetchAngles())
+    fetch(`${API_BASE}/api/angles/${angleId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ status: s }) }).then(() => fetchAngles())
   }
 
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold text-gray-900">Ad Angles</h1>
-        <button onClick={() => setShowCreate(true)} className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700">
-          <Plus className="w-4 h-4" /> New Angle
-        </button>
+        {canEdit && (
+          <button onClick={() => setShowCreate(true)} className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700">
+            <Plus className="w-4 h-4" /> New Angle
+          </button>
+        )}
       </div>
 
       <div className="flex flex-wrap gap-2 mb-4">

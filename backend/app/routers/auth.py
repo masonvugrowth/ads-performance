@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.core.permissions import permission_dict
 from app.database import get_db
 from app.dependencies.auth import get_current_user
 from app.models.user import User
@@ -85,6 +86,7 @@ def logout(response: Response):
 
 @router.get("/auth/me")
 def get_me(current_user: User = Depends(get_current_user)):
+    perms_payload = permission_dict(current_user, current_user.permissions or [])
     return _api_response(
         data={
             "id": current_user.id,
@@ -94,7 +96,15 @@ def get_me(current_user: User = Depends(get_current_user)):
             "is_active": current_user.is_active,
             "notification_email": current_user.notification_email,
             "last_login_at": current_user.last_login_at.isoformat() if current_user.last_login_at else None,
+            **perms_payload,
         }
+    )
+
+
+@router.get("/auth/me/permissions")
+def get_my_permissions(current_user: User = Depends(get_current_user)):
+    return _api_response(
+        data=permission_dict(current_user, current_user.permissions or [])
     )
 
 

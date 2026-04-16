@@ -15,6 +15,8 @@ from app.models.spy_saved_ad import SpySavedAd
 from app.models.spy_analysis_report import SpyAnalysisReport
 from app.models.google_asset_group import GoogleAssetGroup
 from app.models.google_asset import GoogleAsset
+from app.models.user import User
+from app.models.user_permission import UserPermission
 
 __all__ = [
     "AdAccount",
@@ -35,4 +37,6 @@ __all__ = [
     "SpyTrackedPage",
     "SpySavedAd",
     "SpyAnalysisReport",
+    "User",
+    "UserPermission",
 ]

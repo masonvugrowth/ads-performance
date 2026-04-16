@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { useAuth } from '@/components/AuthContext'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
@@ -73,6 +74,12 @@ function BudgetCard({ label, spent, budget, currency, projected, daysRemaining, 
 }
 
 export default function BudgetDashboard() {
+  const { canEditSection, branchesForSection } = useAuth()
+  const viewableBranches = branchesForSection('budget')
+  const editableBranches = branchesForSection('budget', 'edit')
+  const canCreate = editableBranches.length > 0
+  const filterBranches = BRANCHES_ORDER.filter(b => viewableBranches.includes(b))
+  const formBranches = BRANCHES_ORDER.filter(b => editableBranches.includes(b))
   const [tab, setTab] = useState<'monthly' | 'yearly'>('monthly')
   const [month, setMonth] = useState(() => {
     const d = new Date()
@@ -102,14 +109,14 @@ export default function BudgetDashboard() {
 
   const loadMonthly = () => {
     setLoading(true)
-    fetch(`${API_BASE}/api/budget/dashboard?month=${month}`).then(r => r.json())
+    fetch(`${API_BASE}/api/budget/dashboard?month=${month}`, { credentials: 'include' }).then(r => r.json())
       .then(res => { if (res.success) setItems(res.data.items); setLoading(false) })
       .catch(() => setLoading(false))
   }
 
   const loadYearly = () => {
     setYearlyLoading(true)
-    fetch(`${API_BASE}/api/budget/yearly?year=${year}`).then(r => r.json())
+    fetch(`${API_BASE}/api/budget/yearly?year=${year}`, { credentials: 'include' }).then(r => r.json())
       .then(res => {
         if (res.success) { setYearlyData(res.data.branches); setTotalsVnd(res.data.totals_vnd) }
         setYearlyLoading(false)
@@ -125,6 +132,7 @@ export default function BudgetDashboard() {
     setCreating(true)
     await fetch(`${API_BASE}/api/budget/plans`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({ ...form, month: `${month}-01`, total_budget: parseFloat(form.total_budget) }),
     })
     setCreating(false); setShowCreate(false)
@@ -153,14 +161,16 @@ export default function BudgetDashboard() {
           <select value={selectedBranch} onChange={e => setSelectedBranch(e.target.value)}
             className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
             <option value="all">All Branches</option>
-            {BRANCHES_ORDER.map(b => <option key={b} value={b}>{b}</option>)}
+            {filterBranches.map(b => <option key={b} value={b}>{b}</option>)}
           </select>
           {tab === 'monthly' && (
             <>
               <input type="month" value={month} onChange={e => setMonth(e.target.value)}
                 className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-              <button onClick={() => setShowCreate(!showCreate)}
-                className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700">+ New Plan</button>
+              {canCreate && (
+                <button onClick={() => setShowCreate(!showCreate)}
+                  className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700">+ New Plan</button>
+              )}
             </>
           )}
           {tab === 'yearly' && (
@@ -193,7 +203,7 @@ export default function BudgetDashboard() {
               className="border rounded-lg px-3 py-2 text-sm" />
             <select value={form.branch} onChange={e => setForm({ ...form, branch: e.target.value })}
               className="border rounded-lg px-3 py-2 text-sm bg-white">
-              {BRANCHES_ORDER.map(b => <option key={b} value={b}>{b}</option>)}
+              {formBranches.map(b => <option key={b} value={b}>{b}</option>)}
             </select>
             <select value={form.channel} onChange={e => setForm({ ...form, channel: e.target.value })}
               className="border rounded-lg px-3 py-2 text-sm bg-white">

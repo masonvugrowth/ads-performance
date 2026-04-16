@@ -8,6 +8,8 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.dependencies.auth import require_section
+from app.models.user import User
 from app.models.video_transcript import VideoTranscript
 from app.models.ad_material import AdMaterial
 from app.models.ad_combo import AdCombo
@@ -41,6 +43,7 @@ class TranscribeBatchRequest(BaseModel):
 @router.post("/transcribe")
 def start_transcription(
     req: TranscribeRequest,
+    current_user: User = Depends(require_section("ai", "edit")),
     db: Session = Depends(get_db),
 ):
     """Start async video transcription + AI classification.
@@ -79,6 +82,7 @@ def start_transcription(
 @router.post("/transcribe/sync")
 def sync_transcription(
     req: TranscribeRequest,
+    current_user: User = Depends(require_section("ai", "edit")),
     db: Session = Depends(get_db),
 ):
     """Synchronous transcription — blocks until done.
@@ -160,7 +164,11 @@ def sync_transcription(
 # GET /api/transcripts/{id} — Get transcript status/result
 # ──────────────────────────────────────────────
 @router.get("/transcripts/{transcript_id}")
-def get_transcript(transcript_id: str, db: Session = Depends(get_db)):
+def get_transcript(
+    transcript_id: str,
+    current_user: User = Depends(require_section("ai")),
+    db: Session = Depends(get_db),
+):
     """Get transcription status and result."""
     try:
         record = db.query(VideoTranscript).filter(VideoTranscript.id == transcript_id).first()
@@ -181,6 +189,7 @@ def list_transcripts(
     status: str | None = None,
     limit: int = 50,
     offset: int = 0,
+    current_user: User = Depends(require_section("ai")),
     db: Session = Depends(get_db),
 ):
     """List transcription records with optional filters."""
@@ -210,6 +219,7 @@ def list_transcripts(
 @router.post("/transcribe/batch")
 def batch_transcription(
     req: TranscribeBatchRequest,
+    current_user: User = Depends(require_section("ai", "edit")),
     db: Session = Depends(get_db),
 ):
     """Queue batch transcription for multiple videos."""
@@ -248,7 +258,11 @@ def batch_transcription(
 # POST /api/transcripts/{id}/apply — Apply AI suggestions to combo/angle/keypoints
 # ──────────────────────────────────────────────
 @router.post("/transcripts/{transcript_id}/apply")
-def apply_suggestions(transcript_id: str, db: Session = Depends(get_db)):
+def apply_suggestions(
+    transcript_id: str,
+    current_user: User = Depends(require_section("ai", "edit")),
+    db: Session = Depends(get_db),
+):
     """Apply AI-suggested angle and keypoints to the linked combo.
 
     Creates/finds matching angle and keypoints, then updates the combo.

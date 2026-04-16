@@ -9,7 +9,9 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.dependencies.auth import require_section
 from app.models.ai_conversation import AIConversation
+from app.models.user import User
 from app.services.ai_client import build_context, chat_stream
 
 router = APIRouter()
@@ -30,7 +32,11 @@ class ChatRequest(BaseModel):
 
 
 @router.post("/ai/chat")
-def chat(body: ChatRequest, db: Session = Depends(get_db)):
+def chat(
+    body: ChatRequest,
+    current_user: User = Depends(require_section("ai", "edit")),
+    db: Session = Depends(get_db),
+):
     """Send a message and get a streaming response from Claude."""
     session_id = body.session_id or str(uuid.uuid4())
 
@@ -91,7 +97,10 @@ def chat(body: ChatRequest, db: Session = Depends(get_db)):
 
 
 @router.get("/ai/sessions")
-def list_sessions(db: Session = Depends(get_db)):
+def list_sessions(
+    current_user: User = Depends(require_section("ai")),
+    db: Session = Depends(get_db),
+):
     """List all chat sessions with first message preview."""
     try:
         # Get distinct session_ids with their first message
@@ -129,7 +138,11 @@ def list_sessions(db: Session = Depends(get_db)):
 
 
 @router.get("/ai/sessions/{session_id}")
-def get_session(session_id: str, db: Session = Depends(get_db)):
+def get_session(
+    session_id: str,
+    current_user: User = Depends(require_section("ai")),
+    db: Session = Depends(get_db),
+):
     """Get full conversation history for a session."""
     try:
         messages = (
@@ -149,7 +162,11 @@ def get_session(session_id: str, db: Session = Depends(get_db)):
 
 
 @router.delete("/ai/sessions/{session_id}")
-def delete_session(session_id: str, db: Session = Depends(get_db)):
+def delete_session(
+    session_id: str,
+    current_user: User = Depends(require_section("ai", "edit")),
+    db: Session = Depends(get_db),
+):
     """Delete a chat session."""
     try:
         deleted = db.query(AIConversation).filter(AIConversation.session_id == session_id).delete()

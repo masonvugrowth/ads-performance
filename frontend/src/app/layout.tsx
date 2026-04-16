@@ -4,6 +4,7 @@ import './globals.css'
 import Sidebar from '@/components/Sidebar'
 import { AuthProvider } from '@/components/AuthContext'
 import HeaderBar from '@/components/HeaderBar'
+import RouteGuard from '@/components/RouteGuard'
 
 const inter = Inter({ subsets: ['latin'] })
 
@@ -26,7 +27,7 @@ export default function RootLayout({
             <div className="flex-1 flex flex-col overflow-hidden">
               <HeaderBar />
               <main className="flex-1 overflow-auto p-6">
-                {children}
+                <RouteGuard>{children}</RouteGuard>
               </main>
             </div>
           </div>

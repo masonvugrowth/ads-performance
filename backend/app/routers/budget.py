@@ -8,10 +8,13 @@ from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.core.permissions import accessible_branches, is_admin
 from app.database import get_db
+from app.dependencies.auth import require_section
 from app.models.budget import BudgetPlan
 from app.models.campaign import Campaign
 from app.models.metrics import MetricsCache
+from app.models.user import User
 from app.services.budget_service import (
     calculate_pace,
     create_allocation,
@@ -57,10 +60,16 @@ def budget_dashboard(
     month: str = Query(None, description="YYYY-MM format"),
     branch: str = Query(None),
     channel: str = Query(None),
+    current_user: User = Depends(require_section("budget")),
     db: Session = Depends(get_db),
 ):
     """Budget overview with spend vs allocated per branch/channel."""
     try:
+        if not is_admin(current_user):
+            allowed = accessible_branches(db, current_user, "budget") or []
+            if branch and branch not in allowed:
+                return _api_response(error=f"No view access to branch '{branch}'")
+
         if month:
             month_date = date.fromisoformat(f"{month}-01")
         else:
@@ -68,6 +77,10 @@ def budget_dashboard(
             month_date = date(today.year, today.month, 1)
 
         items = get_budget_dashboard(db, month_date, branch, channel)
+        # Filter by user's accessible branches if no specific branch requested
+        if not is_admin(current_user) and not branch:
+            allowed = accessible_branches(db, current_user, "budget") or []
+            items = [i for i in items if i.get("branch") in allowed]
         return _api_response(data={"month": month_date.isoformat(), "items": items})
     except Exception as e:
         return _api_response(error=str(e))
@@ -80,15 +93,24 @@ def list_plans(
     channel: str = Query(None),
     limit: int = Query(50, le=200),
     offset: int = Query(0),
+    current_user: User = Depends(require_section("budget")),
     db: Session = Depends(get_db),
 ):
     """List budget plans with optional filters."""
     try:
+        if not is_admin(current_user):
+            allowed = accessible_branches(db, current_user, "budget") or []
+            if branch and branch not in allowed:
+                return _api_response(error=f"No view access to branch '{branch}'")
+
         q = db.query(BudgetPlan).filter(BudgetPlan.is_active.is_(True))
         if month:
             q = q.filter(BudgetPlan.month == date.fromisoformat(f"{month}-01"))
         if branch:
             q = q.filter(BudgetPlan.branch == branch)
+        elif not is_admin(current_user):
+            allowed = accessible_branches(db, current_user, "budget") or []
+            q = q.filter(BudgetPlan.branch.in_(allowed or ["__no_match__"]))
         if channel:
             q = q.filter(BudgetPlan.channel == channel)
 
@@ -118,9 +140,17 @@ def list_plans(
 
 
 @router.post("/budget/plans")
-def create_plan(body: PlanCreate, db: Session = Depends(get_db)):
+def create_plan(
+    body: PlanCreate,
+    current_user: User = Depends(require_section("budget", "edit")),
+    db: Session = Depends(get_db),
+):
     """Create a new budget plan."""
     try:
+        if not is_admin(current_user):
+            allowed = accessible_branches(db, current_user, "budget", min_level="edit") or []
+            if body.branch not in allowed:
+                return _api_response(error=f"No edit access to branch '{body.branch}'")
         plan = create_budget_plan(db, body.model_dump())
         db.commit()
         return _api_response(data={
@@ -137,21 +167,39 @@ def create_plan(body: PlanCreate, db: Session = Depends(get_db)):
 
 
 @router.get("/budget/plans/{plan_id}")
-def get_plan(plan_id: str, db: Session = Depends(get_db)):
+def get_plan(
+    plan_id: str,
+    current_user: User = Depends(require_section("budget")),
+    db: Session = Depends(get_db),
+):
     """Get plan with all allocations."""
     try:
         result = get_plan_with_allocations(db, plan_id)
         if not result:
             return _api_response(error="Plan not found")
+        if not is_admin(current_user):
+            allowed = accessible_branches(db, current_user, "budget") or []
+            if result.get("plan", {}).get("branch") not in allowed:
+                return _api_response(error="No view access to this plan's branch")
         return _api_response(data=result)
     except Exception as e:
         return _api_response(error=str(e))
 
 
 @router.post("/budget/allocations")
-def create_budget_allocation(body: AllocationCreate, db: Session = Depends(get_db)):
+def create_budget_allocation(
+    body: AllocationCreate,
+    current_user: User = Depends(require_section("budget", "edit")),
+    db: Session = Depends(get_db),
+):
     """Create allocation — INSERT only, version auto-increments."""
     try:
+        # Verify user has edit access to the plan's branch
+        plan = db.query(BudgetPlan).filter(BudgetPlan.id == body.plan_id).first()
+        if plan and not is_admin(current_user):
+            allowed = accessible_branches(db, current_user, "budget", min_level="edit") or []
+            if plan.branch not in allowed:
+                return _api_response(error=f"No edit access to branch '{plan.branch}'")
         allocation = create_allocation(db, body.model_dump())
         db.commit()
         return _api_response(data={
@@ -170,6 +218,7 @@ def create_budget_allocation(body: AllocationCreate, db: Session = Depends(get_d
 @router.get("/budget/channel-summary")
 def channel_summary(
     month: str = Query(None, description="YYYY-MM format"),
+    current_user: User = Depends(require_section("budget")),
     db: Session = Depends(get_db),
 ):
     """Actual Spend vs Remaining Budget per channel, with branch breakdown."""
@@ -181,6 +230,9 @@ def channel_summary(
             month_date = date(today.year, today.month, 1)
 
         items = get_budget_dashboard(db, month_date)
+        if not is_admin(current_user):
+            allowed = accessible_branches(db, current_user, "budget") or []
+            items = [i for i in items if i.get("branch") in allowed]
 
         # Aggregate by channel
         channels: dict[str, dict] = {}
@@ -220,6 +272,7 @@ def channel_summary(
 @router.get("/budget/pace")
 def budget_pace(
     month: str = Query(None, description="YYYY-MM format"),
+    current_user: User = Depends(require_section("budget")),
     db: Session = Depends(get_db),
 ):
     """Pace status per branch/channel for the given month."""
@@ -231,6 +284,9 @@ def budget_pace(
             month_date = date(today.year, today.month, 1)
 
         items = get_budget_dashboard(db, month_date)
+        if not is_admin(current_user):
+            allowed = accessible_branches(db, current_user, "budget") or []
+            items = [i for i in items if i.get("branch") in allowed]
         return _api_response(data={
             "month": month_date.isoformat(),
             "pace": [
@@ -253,12 +309,17 @@ def budget_pace(
 @router.get("/budget/yearly")
 def yearly_overview(
     year: int = Query(None),
+    current_user: User = Depends(require_section("budget")),
     db: Session = Depends(get_db),
 ):
     """Yearly budget overview: total allocate per branch + actual spend per month."""
     try:
         if not year:
             year = date.today().year
+
+        allowed_set: set[str] | None = None
+        if not is_admin(current_user):
+            allowed_set = set(accessible_branches(db, current_user, "budget") or [])
 
         from app.services.budget_service import _get_account_ids_for_branch
 
@@ -276,6 +337,8 @@ def yearly_overview(
         branch_data: dict[str, dict] = {}
         for plan in plans:
             b = plan.branch
+            if allowed_set is not None and b not in allowed_set:
+                continue
             m = plan.month.month
             if b not in branch_data:
                 branch_data[b] = {
