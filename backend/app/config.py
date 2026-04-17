@@ -70,7 +70,7 @@ class Settings(BaseSettings):
     FIGMA_TEAM_ID: str = ""
 
     # PMS (Reservation system)
-    PMS_API_BASE_URL: str = "https://hid-dashboard-production.up.railway.app"
+    PMS_API_BASE_URL: str = "https://meander-hid-dashboard.zeabur.app"
     PMS_API_KEY: str = ""
 
     # Export API
