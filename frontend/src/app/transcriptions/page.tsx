@@ -87,10 +87,10 @@ export default function TranscriptionsPage() {
   const loadData = () => {
     setLoading(true)
     Promise.all([
-      fetch(`${API_BASE}/api/transcripts?limit=100`).then(r => r.json()),
-      fetch(`${API_BASE}/api/combos?limit=200`).then(r => r.json()),
-      fetch(`${API_BASE}/api/materials?limit=200`).then(r => r.json()),
-      fetch(`${API_BASE}/api/accounts`).then(r => r.json()),
+      fetch(`${API_BASE}/api/transcripts?limit=100`, { credentials: 'include' }).then(r => r.json()),
+      fetch(`${API_BASE}/api/combos?limit=200`, { credentials: 'include' }).then(r => r.json()),
+      fetch(`${API_BASE}/api/materials?limit=200`, { credentials: 'include' }).then(r => r.json()),
+      fetch(`${API_BASE}/api/accounts`, { credentials: 'include' }).then(r => r.json()),
     ]).then(([tRes, cRes, mRes, aRes]) => {
       if (tRes.success) setTranscripts(tRes.data.items)
       if (cRes.success) setCombos(cRes.data.items)
@@ -107,7 +107,7 @@ export default function TranscriptionsPage() {
     const processing = transcripts.some(t => ['PENDING', 'TRANSCRIBING', 'ANALYZING'].includes(t.status))
     if (!processing) return
     const interval = setInterval(() => {
-      fetch(`${API_BASE}/api/transcripts?limit=100`).then(r => r.json())
+      fetch(`${API_BASE}/api/transcripts?limit=100`, { credentials: 'include' }).then(r => r.json())
         .then(data => { if (data.success) setTranscripts(data.data.items) })
     }, 5000)
     return () => clearInterval(interval)
@@ -121,6 +121,7 @@ export default function TranscriptionsPage() {
       const resp = await fetch(`${API_BASE}${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({
           video_url: videoUrl,
           combo_id: selectedCombo || null,
@@ -147,6 +148,7 @@ export default function TranscriptionsPage() {
     try {
       const resp = await fetch(`${API_BASE}/api/transcripts/${transcriptId}/apply`, {
         method: 'POST',
+        credentials: 'include',
       })
       const data = await resp.json()
       if (data.success) {

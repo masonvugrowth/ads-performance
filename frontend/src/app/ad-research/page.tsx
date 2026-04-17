@@ -161,19 +161,19 @@ export default function SpyAdsPage() {
     loadSavedAds()
     loadReports()
     // Load saved IDs for bookmarks
-    fetch(`${API_BASE}/api/spy-ads/saved-ads?limit=200`).then(r => r.json()).then(d => {
+    fetch(`${API_BASE}/api/spy-ads/saved-ads?limit=200`, { credentials: 'include' }).then(r => r.json()).then(d => {
       if (d.success) setSavedIds(new Set(d.data.items.map((a: SavedAd) => a.ad_archive_id)))
     }).catch(() => {})
   }, [])
 
   const loadTrackedPages = () => {
-    fetch(`${API_BASE}/api/spy-ads/tracked-pages`).then(r => r.json()).then(d => {
+    fetch(`${API_BASE}/api/spy-ads/tracked-pages`, { credentials: 'include' }).then(r => r.json()).then(d => {
       if (d.success) setTrackedPages(d.data)
     }).catch(() => {})
   }
 
   const loadCollections = () => {
-    fetch(`${API_BASE}/api/spy-ads/saved-ads/collections`).then(r => r.json()).then(d => {
+    fetch(`${API_BASE}/api/spy-ads/saved-ads/collections`, { credentials: 'include' }).then(r => r.json()).then(d => {
       if (d.success) setCollections(d.data)
     }).catch(() => {})
   }
@@ -181,13 +181,13 @@ export default function SpyAdsPage() {
   const loadSavedAds = (collection?: string, sortBy?: string) => {
     const params = new URLSearchParams({ limit: '100', sort_by: sortBy || savedSortBy, sort_dir: 'desc' })
     if (collection) params.set('collection', collection)
-    fetch(`${API_BASE}/api/spy-ads/saved-ads?${params}`).then(r => r.json()).then(d => {
+    fetch(`${API_BASE}/api/spy-ads/saved-ads?${params}`, { credentials: 'include' }).then(r => r.json()).then(d => {
       if (d.success) { setSavedAds(d.data.items); setSavedTotal(d.data.total) }
     }).catch(() => {})
   }
 
   const loadReports = () => {
-    fetch(`${API_BASE}/api/spy-ads/reports`).then(r => r.json()).then(d => {
+    fetch(`${API_BASE}/api/spy-ads/reports`, { credentials: 'include' }).then(r => r.json()).then(d => {
       if (d.success) setReports(d.data.items)
     }).catch(() => {})
   }
@@ -202,7 +202,7 @@ export default function SpyAdsPage() {
     })
     if (append && pagingCursor) params.set('after', pagingCursor)
 
-    fetch(`${API_BASE}/api/spy-ads/search?${params}`).then(r => r.json()).then(d => {
+    fetch(`${API_BASE}/api/spy-ads/search?${params}`, { credentials: 'include' }).then(r => r.json()).then(d => {
       if (d.success) {
         if (append) setSearchResults(prev => [...prev, ...d.data.ads])
         else setSearchResults(d.data.ads)
@@ -215,6 +215,7 @@ export default function SpyAdsPage() {
     fetch(`${API_BASE}/api/spy-ads/saved-ads`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({ ...ad, country }),
     }).then(r => r.json()).then(d => {
       if (d.success) {
@@ -228,6 +229,7 @@ export default function SpyAdsPage() {
     fetch(`${API_BASE}/api/spy-ads/tracked-pages`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({ page_id: ad.page_id, page_name: ad.page_name, category: 'Boutique Hotel', country }),
     }).then(r => r.json()).then(d => {
       if (d.success) loadTrackedPages()
@@ -239,6 +241,7 @@ export default function SpyAdsPage() {
     fetch(`${API_BASE}/api/spy-ads/tracked-pages`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify(newPage),
     }).then(r => r.json()).then(d => {
       if (d.success) {
@@ -250,20 +253,20 @@ export default function SpyAdsPage() {
   }
 
   const removeTrackedPage = (id: string) => {
-    fetch(`${API_BASE}/api/spy-ads/tracked-pages/${id}`, { method: 'DELETE' })
+    fetch(`${API_BASE}/api/spy-ads/tracked-pages/${id}`, { method: 'DELETE', credentials: 'include' })
       .then(r => r.json()).then(d => { if (d.success) loadTrackedPages() }).catch(() => {})
   }
 
   const viewPageAds = (page: TrackedPage) => {
     setViewingPage(page)
     setCompetitorAds([])
-    fetch(`${API_BASE}/api/spy-ads/tracked-pages/${page.id}/ads?limit=25`)
+    fetch(`${API_BASE}/api/spy-ads/tracked-pages/${page.id}/ads?limit=25`, { credentials: 'include' })
       .then(r => r.json()).then(d => { if (d.success) setCompetitorAds(d.data.ads) }).catch(() => {})
   }
 
   // ── Saved ads functions ──
   const deleteSavedAd = (id: string) => {
-    fetch(`${API_BASE}/api/spy-ads/saved-ads/${id}`, { method: 'DELETE' })
+    fetch(`${API_BASE}/api/spy-ads/saved-ads/${id}`, { method: 'DELETE', credentials: 'include' })
       .then(r => r.json()).then(d => {
         if (d.success) loadSavedAds(filterCollection)
       }).catch(() => {})
@@ -289,6 +292,7 @@ export default function SpyAdsPage() {
     fetch(`${API_BASE}/api/spy-ads/analyze`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({ ad_ids: ids, analysis_type: analysisType }),
     }).then(async resp => {
       const reader = resp.body?.getReader()
@@ -309,7 +313,7 @@ export default function SpyAdsPage() {
   }
 
   const viewReport = (id: string) => {
-    fetch(`${API_BASE}/api/spy-ads/reports/${id}`).then(r => r.json()).then(d => {
+    fetch(`${API_BASE}/api/spy-ads/reports/${id}`, { credentials: 'include' }).then(r => r.json()).then(d => {
       if (d.success) setSelectedReport(d.data)
     }).catch(() => {})
   }

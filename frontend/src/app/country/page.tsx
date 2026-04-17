@@ -109,7 +109,7 @@ export default function CountryDashboard() {
 
   // Load accounts once
   useEffect(() => {
-    fetch(`${API_BASE}/api/accounts`)
+    fetch(`${API_BASE}/api/accounts`, { credentials: 'include' })
       .then(r => r.json())
       .then(data => { if (data.success) setAccounts(data.data) })
       .catch(() => {})
@@ -118,7 +118,7 @@ export default function CountryDashboard() {
   // Load countries (filtered by branch)
   useEffect(() => {
     const accParam = selectedAccount ? `?account_id=${selectedAccount}` : ''
-    fetch(`${API_BASE}/api/dashboard/country/countries${accParam}`)
+    fetch(`${API_BASE}/api/dashboard/country/countries${accParam}`, { credentials: 'include' })
       .then(r => r.json())
       .then(res => { if (res.success) setCountries(res.data) })
       .catch(() => {})
@@ -144,13 +144,13 @@ export default function CountryDashboard() {
       : null
 
     Promise.all([
-      fetch(`${API_BASE}/api/dashboard/country?${qs}`).then(r => r.json()),
-      fetch(`${API_BASE}/api/dashboard/country/comparison?${qs}`).then(r => r.json()),
+      fetch(`${API_BASE}/api/dashboard/country?${qs}`, { credentials: 'include' }).then(r => r.json()),
+      fetch(`${API_BASE}/api/dashboard/country/comparison?${qs}`, { credentials: 'include' }).then(r => r.json()),
       taQs
-        ? fetch(`${API_BASE}/api/dashboard/country/ta-breakdown?${taQs}`).then(r => r.json())
+        ? fetch(`${API_BASE}/api/dashboard/country/ta-breakdown?${taQs}`, { credentials: 'include' }).then(r => r.json())
         : Promise.resolve({ success: true, data: [] }),
       taQs
-        ? fetch(`${API_BASE}/api/dashboard/country/funnel?${taQs}`).then(r => r.json())
+        ? fetch(`${API_BASE}/api/dashboard/country/funnel?${taQs}`, { credentials: 'include' }).then(r => r.json())
         : Promise.resolve({ success: true, data: { stages: [] } }),
     ]).then(([kpi, comp, ta, funnel]) => {
       if (kpi.success && kpi.data) {

@@ -132,7 +132,7 @@ export default function RulesPage() {
 
   const fetchRules = () => {
     setLoading(true)
-    fetch(`${API_BASE}/api/rules`)
+    fetch(`${API_BASE}/api/rules`, { credentials: 'include' })
       .then(r => r.json())
       .then(data => { if (data.success) setRules(data.data) })
       .catch(() => {})
@@ -141,7 +141,7 @@ export default function RulesPage() {
 
   useEffect(() => {
     fetchRules()
-    fetch(`${API_BASE}/api/accounts`)
+    fetch(`${API_BASE}/api/accounts`, { credentials: 'include' })
       .then(r => r.json())
       .then(data => { if (data.success) setAccounts(data.data) })
       .catch(() => {})
@@ -203,6 +203,7 @@ export default function RulesPage() {
     fetch(url, {
       method,
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify(body),
     })
       .then(r => r.json())
@@ -218,17 +219,18 @@ export default function RulesPage() {
     fetch(`${API_BASE}/api/rules/${rule.id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({ is_active: !rule.is_active }),
     }).then(() => fetchRules())
   }
 
   const deleteRule = (id: string) => {
-    fetch(`${API_BASE}/api/rules/${id}`, { method: 'DELETE' }).then(() => fetchRules())
+    fetch(`${API_BASE}/api/rules/${id}`, { method: 'DELETE', credentials: 'include' }).then(() => fetchRules())
   }
 
   const evaluateRule = (id: string) => {
     setEvalResult(null)
-    fetch(`${API_BASE}/api/rules/${id}/evaluate`, { method: 'POST' })
+    fetch(`${API_BASE}/api/rules/${id}/evaluate`, { method: 'POST', credentials: 'include' })
       .then(r => r.json())
       .then(data => {
         if (data.success) {

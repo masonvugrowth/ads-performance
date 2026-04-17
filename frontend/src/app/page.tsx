@@ -170,11 +170,12 @@ export default function DashboardPage() {
     const platParam = selectedPlatform ? `&platform=${selectedPlatform}` : ''
     const qs = `?${dateParams}${branchParam}${platParam}`
 
+    const opts = { credentials: 'include' as const }
     Promise.all([
-      fetch(`${API_BASE}/api/dashboard/kpis${qs}`).then(r => r.json()),
-      fetch(`${API_BASE}/api/dashboard/daily${qs}`).then(r => r.json()),
-      fetch(`${API_BASE}/api/dashboard/by-account?${dateParams}${branchParam}${platParam}`).then(r => r.json()),
-      fetch(`${API_BASE}/api/dashboard/funnel${qs}`).then(r => r.json()),
+      fetch(`${API_BASE}/api/dashboard/kpis${qs}`, opts).then(r => r.json()),
+      fetch(`${API_BASE}/api/dashboard/daily${qs}`, opts).then(r => r.json()),
+      fetch(`${API_BASE}/api/dashboard/by-account?${dateParams}${branchParam}${platParam}`, opts).then(r => r.json()),
+      fetch(`${API_BASE}/api/dashboard/funnel${qs}`, opts).then(r => r.json()),
     ])
       .then(([kpiRes, dailyRes, accountRes, funnelRes]) => {
         if (kpiRes.success) setKpis(kpiRes.data)
@@ -187,11 +188,11 @@ export default function DashboardPage() {
   }, [getDateParams, selectedBranches, selectedPlatform])
 
   useEffect(() => {
-    fetch(`${API_BASE}/api/accounts`)
+    fetch(`${API_BASE}/api/accounts`, { credentials: 'include' })
       .then(r => r.json())
       .then(data => { if (data.success) setAccounts(data.data) })
       .catch(() => {})
-    fetch(`${API_BASE}/api/branches`)
+    fetch(`${API_BASE}/api/branches`, { credentials: 'include' })
       .then(r => r.json())
       .then(data => { if (data.success) setBranches(data.data) })
       .catch(() => {})

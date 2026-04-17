@@ -17,13 +17,13 @@ export default function InsightsPage() {
   const bottomRef = useRef<HTMLDivElement>(null)
 
   const fetchSessions = () => {
-    fetch(`${API_BASE}/api/ai/sessions`).then(r => r.json())
+    fetch(`${API_BASE}/api/ai/sessions`, { credentials: 'include' }).then(r => r.json())
       .then(d => { if (d.success) setSessions(d.data) }).catch(() => {})
   }
 
   const loadSession = (sid: string) => {
     setActiveSession(sid)
-    fetch(`${API_BASE}/api/ai/sessions/${sid}`).then(r => r.json())
+    fetch(`${API_BASE}/api/ai/sessions/${sid}`, { credentials: 'include' }).then(r => r.json())
       .then(d => { if (d.success) setMessages(d.data.map((m: any) => ({ role: m.role, content: m.content }))) }).catch(() => {})
   }
 
@@ -34,7 +34,7 @@ export default function InsightsPage() {
 
   const deleteSession = (sid: string, e: React.MouseEvent) => {
     e.stopPropagation()
-    fetch(`${API_BASE}/api/ai/sessions/${sid}`, { method: 'DELETE' })
+    fetch(`${API_BASE}/api/ai/sessions/${sid}`, { method: 'DELETE', credentials: 'include' })
       .then(() => { fetchSessions(); if (activeSession === sid) newChat() })
   }
 
@@ -52,6 +52,7 @@ export default function InsightsPage() {
       const res = await fetch(`${API_BASE}/api/ai/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({ session_id: activeSession, message: userMsg }),
       })
 

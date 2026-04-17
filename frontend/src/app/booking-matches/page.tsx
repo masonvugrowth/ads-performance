@@ -112,8 +112,8 @@ export default function BookingMatchesDashboard() {
       if (branch) summaryParams.set('branch', branch)
 
       const [summaryRes, listRes] = await Promise.all([
-        fetch(`${API_BASE}/api/booking-matches/summary?${summaryParams}`).then(r => r.json()),
-        fetch(`${API_BASE}/api/booking-matches?${params}`).then(r => r.json()),
+        fetch(`${API_BASE}/api/booking-matches/summary?${summaryParams}`, { credentials: 'include' }).then(r => r.json()),
+        fetch(`${API_BASE}/api/booking-matches?${params}`, { credentials: 'include' }).then(r => r.json()),
       ])
 
       if (summaryRes.success) setSummary(summaryRes.data)
@@ -132,7 +132,7 @@ export default function BookingMatchesDashboard() {
       const { from, to } = getDateRange(datePreset)
       const res = await fetch(
         `${API_BASE}/api/booking-matches/run?date_from=${from}&date_to=${to}`,
-        { method: 'POST' }
+        { method: 'POST', credentials: 'include' }
       ).then(r => r.json())
 
       if (res.success) {

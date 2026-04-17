@@ -56,16 +56,16 @@ export default function CreateAndSubmitPage() {
   const [deadline, setDeadline] = useState('')
 
   useEffect(() => {
-    fetch(`${API_BASE}/api/accounts`).then(r => r.json()).then(d => { if (d.success) setAccounts(d.data.filter((a: any) => a.platform === 'meta')) }).catch(() => {})
+    fetch(`${API_BASE}/api/accounts`, { credentials: 'include' }).then(r => r.json()).then(d => { if (d.success) setAccounts(d.data.filter((a: any) => a.platform === 'meta')) }).catch(() => {})
     fetch(`${API_BASE}/api/users/reviewers`, { credentials: 'include' }).then(r => r.json()).then(d => { if (d.success) setReviewers(d.data.items || []) }).catch(() => {})
-    fetch(`${API_BASE}/api/keypoints`).then(r => r.json()).then(d => { if (d.success) setKeypoints(d.data) }).catch(() => {})
-    fetch(`${API_BASE}/api/angles`).then(r => r.json()).then(d => { if (d.success) setAngles(d.data) }).catch(() => {})
+    fetch(`${API_BASE}/api/keypoints`, { credentials: 'include' }).then(r => r.json()).then(d => { if (d.success) setKeypoints(d.data) }).catch(() => {})
+    fetch(`${API_BASE}/api/angles`, { credentials: 'include' }).then(r => r.json()).then(d => { if (d.success) setAngles(d.data) }).catch(() => {})
   }, [])
 
   useEffect(() => {
     if (!branchId) return
-    fetch(`${API_BASE}/api/copies?branch_id=${branchId}&limit=200`).then(r => r.json()).then(d => { if (d.success) setCopies(d.data.items || []) }).catch(() => {})
-    fetch(`${API_BASE}/api/materials?branch_id=${branchId}&limit=200`).then(r => r.json()).then(d => { if (d.success) setMaterials(d.data.items || []) }).catch(() => {})
+    fetch(`${API_BASE}/api/copies?branch_id=${branchId}&limit=200`, { credentials: 'include' }).then(r => r.json()).then(d => { if (d.success) setCopies(d.data.items || []) }).catch(() => {})
+    fetch(`${API_BASE}/api/materials?branch_id=${branchId}&limit=200`, { credentials: 'include' }).then(r => r.json()).then(d => { if (d.success) setMaterials(d.data.items || []) }).catch(() => {})
   }, [branchId])
 
   const toggleReviewer = (id: string) => setSelectedReviewers(prev => prev.includes(id) ? prev.filter(r => r !== id) : [...prev, id])
@@ -101,6 +101,7 @@ export default function CreateAndSubmitPage() {
         const res = await fetch(`${API_BASE}/api/combos`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
           body: JSON.stringify({
             branch_id: branchId, ad_name: adName, target_audience: targetAudience || null,
             copy_id: selectedCopyId, material_id: selectedMaterialId,

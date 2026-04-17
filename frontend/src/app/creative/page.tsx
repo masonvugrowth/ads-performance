@@ -61,9 +61,9 @@ export default function CreativePage() {
   }
 
   useEffect(() => {
-    fetch(`${API_BASE}/api/accounts`).then(r => r.json()).then(d => { if (d.success) setAccounts(d.data.filter((a: any) => a.platform === 'meta')) }).catch(() => {})
-    fetch(`${API_BASE}/api/keypoints`).then(r => r.json()).then(d => { if (d.success) setAllKeypoints(d.data) }).catch(() => {})
-    fetch(`${API_BASE}/api/angles`).then(r => r.json()).then(d => { if (d.success) setAllAngles(d.data) }).catch(() => {})
+    fetch(`${API_BASE}/api/accounts`, { credentials: 'include' }).then(r => r.json()).then(d => { if (d.success) setAccounts(d.data.filter((a: any) => a.platform === 'meta')) }).catch(() => {})
+    fetch(`${API_BASE}/api/keypoints`, { credentials: 'include' }).then(r => r.json()).then(d => { if (d.success) setAllKeypoints(d.data) }).catch(() => {})
+    fetch(`${API_BASE}/api/angles`, { credentials: 'include' }).then(r => r.json()).then(d => { if (d.success) setAllAngles(d.data) }).catch(() => {})
   }, [])
 
   // Fetch combos with filters + sort
@@ -75,7 +75,7 @@ export default function CreativePage() {
     if (fCountry) params.set('country', fCountry)
     if (fVerdict) params.set('verdict', fVerdict)
     if (sortBy) { params.set('sort_by', sortBy); params.set('sort_dir', sortDir) }
-    fetch(`${API_BASE}/api/combos?${params}`).then(r => r.json()).then(d => {
+    fetch(`${API_BASE}/api/combos?${params}`, { credentials: 'include' }).then(r => r.json()).then(d => {
       if (d.success) { setCombos(d.data.items); setComboTotal(d.data.total) }
     }).catch(() => {})
   }, [fBranch, fTA, fCountry, fVerdict, sortBy, sortDir])
@@ -83,16 +83,16 @@ export default function CreativePage() {
   // Fetch copies + materials
   useEffect(() => {
     const bp = fBranch ? `?branch_id=${fBranch}` : ''
-    fetch(`${API_BASE}/api/copies${bp}&limit=200`.replace('?&', '?').replace(/^&/, '?')).then(r => r.json()).then(d => { if (d.success) setCopies(d.data.items) }).catch(() => {})
-    fetch(`${API_BASE}/api/materials${bp}&limit=200`.replace('?&', '?').replace(/^&/, '?')).then(r => r.json()).then(d => { if (d.success) setMaterials(d.data.items) }).catch(() => {})
+    fetch(`${API_BASE}/api/copies${bp}&limit=200`.replace('?&', '?').replace(/^&/, '?'), { credentials: 'include' }).then(r => r.json()).then(d => { if (d.success) setCopies(d.data.items) }).catch(() => {})
+    fetch(`${API_BASE}/api/materials${bp}&limit=200`.replace('?&', '?').replace(/^&/, '?'), { credentials: 'include' }).then(r => r.json()).then(d => { if (d.success) setMaterials(d.data.items) }).catch(() => {})
   }, [fBranch])
 
   const updateVerdict = (comboId: string, verdict: string) => {
-    fetch(`${API_BASE}/api/combos/${comboId}/verdict`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ verdict }) })
+    fetch(`${API_BASE}/api/combos/${comboId}/verdict`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ verdict }) })
   }
 
   const updateCombo = (comboId: string, data: { angle_id?: string; keypoint_ids?: string[] }) => {
-    fetch(`${API_BASE}/api/combos/${comboId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })
+    fetch(`${API_BASE}/api/combos/${comboId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify(data) })
       .then(() => { setEditingId(null); setSortBy(s => s) /* trigger refetch */ })
   }
 
