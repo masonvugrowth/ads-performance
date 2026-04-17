@@ -135,7 +135,23 @@ def auto_classify_all_angles(db: Session, benchmarks: dict[str, float] | None = 
         total_revenue = sum(float(c.revenue or 0) for c in combos)
         agg_roas = total_revenue / total_spend if total_spend > 0 else 0
 
-        benchmark = benchmarks.get(angle.branch_id, 0)
+        # Determine benchmark: if angle has a branch_id, use that branch's benchmark.
+        # If branch_id is NULL (global angle), compute a weighted-average benchmark
+        # from all branches its combos belong to.
+        if angle.branch_id and angle.branch_id in benchmarks:
+            benchmark = benchmarks[angle.branch_id]
+        else:
+            # Weighted average: sum(branch_spend * branch_benchmark) / sum(branch_spend)
+            branch_spends: dict[str, float] = {}
+            for c in combos:
+                if c.branch_id:
+                    branch_spends[c.branch_id] = branch_spends.get(c.branch_id, 0) + float(c.spend or 0)
+            weighted_sum = sum(
+                spend * benchmarks.get(bid, 0)
+                for bid, spend in branch_spends.items()
+            )
+            total_branch_spend = sum(branch_spends.values())
+            benchmark = weighted_sum / total_branch_spend if total_branch_spend > 0 else 0
 
         # Angle rules = 2x combo rules
         # Need EITHER clicks > 9000 OR bookings >= 10 to have enough data
