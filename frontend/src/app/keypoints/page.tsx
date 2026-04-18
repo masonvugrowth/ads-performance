@@ -6,7 +6,7 @@ import { useAuth } from '@/components/AuthContext'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
-interface Keypoint { id: string; branch_id: string; category: string; title: string; combos: number; spend: number; revenue: number; roas: number; conversions: number; ctr: number }
+interface Keypoint { id: string; branch_id: string; category: string; title: string; combos: number; spend: number; revenue: number; roas: number; conversions: number; ctr: number; verdict: string; benchmark_roas: number }
 interface Account { id: string; account_name: string }
 
 const CATEGORIES = ['location', 'amenity', 'experience', 'value']
@@ -15,6 +15,12 @@ const CAT_COLORS: Record<string, string> = {
   amenity: 'bg-green-50 text-green-700',
   experience: 'bg-purple-50 text-purple-700',
   value: 'bg-orange-50 text-orange-700',
+}
+const VERDICTS = ['WIN', 'TEST', 'LOSE']
+const VERDICT_COLORS: Record<string, string> = {
+  WIN: 'bg-green-100 text-green-700',
+  TEST: 'bg-yellow-100 text-yellow-700',
+  LOSE: 'bg-red-100 text-red-700',
 }
 
 export default function KeypointsPage() {
@@ -29,6 +35,10 @@ export default function KeypointsPage() {
   const [formCategory, setFormCategory] = useState('location')
   const [formTitle, setFormTitle] = useState('')
   const _formDescRemoved = null // description removed
+
+  // Filters
+  const [fBranch, setFBranch] = useState('')
+  const [fVerdict, setFVerdict] = useState('')
 
   const fetch_kp = () => {
     setLoading(true)
@@ -53,9 +63,16 @@ export default function KeypointsPage() {
     fetch(`${API_BASE}/api/keypoints/${id}`, { method: 'DELETE', credentials: 'include' }).then(() => fetch_kp())
   }
 
+  // Apply filters
+  const filtered = keypoints.filter(kp => {
+    if (fBranch && kp.branch_id !== fBranch) return false
+    if (fVerdict && kp.verdict !== fVerdict) return false
+    return true
+  })
+
   // Group by branch
   const grouped: Record<string, { name: string; items: Keypoint[] }> = {}
-  for (const kp of keypoints) {
+  for (const kp of filtered) {
     const acc = accounts.find(a => a.id === kp.branch_id)
     const name = acc?.account_name || 'Unknown'
     if (!grouped[kp.branch_id]) grouped[kp.branch_id] = { name, items: [] }
@@ -71,6 +88,18 @@ export default function KeypointsPage() {
             <Plus className="w-4 h-4" /> Add Keypoint
           </button>
         )}
+      </div>
+
+      {/* Filters */}
+      <div className="flex flex-wrap gap-2 mb-4">
+        <select value={fBranch} onChange={e => setFBranch(e.target.value)} className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm">
+          <option value="">All Branches</option>
+          {accounts.map(a => <option key={a.id} value={a.id}>{a.account_name}</option>)}
+        </select>
+        <select value={fVerdict} onChange={e => setFVerdict(e.target.value)} className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm">
+          <option value="">All Verdicts</option>
+          {VERDICTS.map(v => <option key={v} value={v}>{v}</option>)}
+        </select>
       </div>
 
       {showCreate && (
@@ -97,11 +126,16 @@ export default function KeypointsPage() {
                   <div key={kp.id} className="flex items-start gap-3 p-3 rounded-lg bg-gray-50">
                     <span className={`text-xs px-2 py-0.5 rounded font-medium shrink-0 ${CAT_COLORS[kp.category] || 'bg-gray-100 text-gray-600'}`}>{kp.category}</span>
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-gray-900">{kp.title}</p>
+                      <div className="flex items-center gap-2">
+                        <p className="text-sm font-medium text-gray-900">{kp.title}</p>
+                        {kp.combos > 0 && (
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0 ${VERDICT_COLORS[kp.verdict] || 'bg-gray-100 text-gray-600'}`}>{kp.verdict}</span>
+                        )}
+                      </div>
                       {kp.combos > 0 && (
                         <div className="flex gap-3 mt-1 text-[11px] text-gray-500">
                           <span>{kp.combos} ads</span>
-                          <span>ROAS <strong className={kp.roas >= 1 ? 'text-green-600' : 'text-red-500'}>{kp.roas.toFixed(2)}x</strong></span>
+                          <span>ROAS <strong className={kp.roas >= (kp.benchmark_roas || 1) ? 'text-green-600' : 'text-red-500'}>{kp.roas.toFixed(2)}x</strong></span>
                           <span>{kp.conversions} bookings</span>
                           <span>CTR {(kp.ctr * 100).toFixed(2)}%</span>
                         </div>

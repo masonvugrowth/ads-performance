@@ -13,3 +13,6 @@ class AdMaterial(TimestampMixin, Base):
     description = Column(Text, nullable=True)
     target_audience = Column(String(30), nullable=True, index=True)  # Solo | Couple | Family | Group
     derived_verdict = Column(String(10), nullable=True)  # WIN | TEST | LOSE — READ-ONLY from combos
+    url_source = Column(String(10), nullable=False, default="auto", index=True)
+    # url_source: 'auto' = synced from Meta (overwritable by sync task)
+    #             'manual' = designer-input URL (sync task MUST skip)

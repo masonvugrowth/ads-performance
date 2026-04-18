@@ -82,9 +82,11 @@ export default function CreativePage() {
 
   // Fetch copies + materials
   useEffect(() => {
-    const bp = fBranch ? `?branch_id=${fBranch}` : ''
-    fetch(`${API_BASE}/api/copies${bp}&limit=200`.replace('?&', '?').replace(/^&/, '?'), { credentials: 'include' }).then(r => r.json()).then(d => { if (d.success) setCopies(d.data.items) }).catch(() => {})
-    fetch(`${API_BASE}/api/materials${bp}&limit=200`.replace('?&', '?').replace(/^&/, '?'), { credentials: 'include' }).then(r => r.json()).then(d => { if (d.success) setMaterials(d.data.items) }).catch(() => {})
+    const params = new URLSearchParams()
+    params.set('limit', '200')
+    if (fBranch) params.set('branch_id', fBranch)
+    fetch(`${API_BASE}/api/copies?${params}`, { credentials: 'include' }).then(r => r.json()).then(d => { if (d.success) setCopies(d.data.items) }).catch(() => {})
+    fetch(`${API_BASE}/api/materials?${params}`, { credentials: 'include' }).then(r => r.json()).then(d => { if (d.success) setMaterials(d.data.items) }).catch(() => {})
   }, [fBranch])
 
   const updateVerdict = (comboId: string, verdict: string) => {

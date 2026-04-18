@@ -4,7 +4,13 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from anthropic import Anthropic
+from dotenv import dotenv_values
+from pathlib import Path
 from app.database import SessionLocal, engine
+
+# Load API key directly from .env (bypass shell env which may have empty ANTHROPIC_API_KEY)
+_env_path = Path(__file__).resolve().parent.parent.parent / '.env'
+_anthropic_key = dotenv_values(_env_path).get('ANTHROPIC_API_KEY', '')
 from app.models.account import AdAccount
 from app.models.ad_angle import AdAngle
 from app.models.ad_combo import AdCombo
@@ -15,7 +21,7 @@ from app.models.campaign import Campaign
 from sqlalchemy import text
 
 db = SessionLocal()
-client = Anthropic()
+client = Anthropic(api_key=_anthropic_key)
 
 # Load all data
 accounts = {a.id: a.account_name for a in db.query(AdAccount).all()}
@@ -23,12 +29,10 @@ keypoints = db.query(BranchKeypoint).filter(BranchKeypoint.is_active.is_(True)).
 copies = {c.copy_id: c for c in db.query(AdCopy).all()}
 materials = {m.material_id: m for m in db.query(AdMaterial).all()}
 
-# Angles per branch
+# Angles are GLOBAL — same list for every branch
 with engine.connect() as c:
-    ang_rows = c.execute(text('SELECT angle_id, branch_id, angle_type, angle_explain FROM ad_angles')).fetchall()
-angles_by_branch = {}
-for r in ang_rows:
-    angles_by_branch.setdefault(r[1], []).append({'angle_id': r[0], 'type': r[2], 'explain': (r[3] or '')[:80]})
+    ang_rows = c.execute(text('SELECT angle_id, angle_type, angle_explain FROM ad_angles ORDER BY angle_id')).fetchall()
+ALL_ANGLES = [{'angle_id': r[0], 'type': r[1] or '?', 'explain': (r[2] or '')[:80]} for r in ang_rows]
 
 # Keypoints per branch
 kps_by_branch = {}
@@ -87,31 +91,28 @@ for i in range(0, len(combos), BATCH):
             except Exception:
                 pass  # skip if image fails
 
-    # Available angles and keypoints for these branches
+    # Available keypoints per branch (angles are global → same list for all)
     branch_ids = list(set(c.branch_id for c in batch))
-    available_angles = {}
-    available_kps = {}
-    for bid in branch_ids:
-        available_angles[bid] = angles_by_branch.get(bid, [])
-        available_kps[bid] = kps_by_branch.get(bid, [])
+    available_kps = {bid: kps_by_branch.get(bid, []) for bid in branch_ids}
 
     prompt_text = f"""Analyze these hotel ad combos and assign the best matching ANGLE and KEYPOINTS for each.
 
 COMBOS:
 {json.dumps(combo_descriptions, ensure_ascii=False, indent=1)}
 
-AVAILABLE ANGLES (per branch):
-{json.dumps(available_angles, ensure_ascii=False, indent=1)}
+AVAILABLE ANGLES (GLOBAL — apply to any branch):
+{json.dumps(ALL_ANGLES, ensure_ascii=False, indent=1)}
 
 AVAILABLE KEYPOINTS (per branch):
 {json.dumps(available_kps, ensure_ascii=False, indent=1)}
 
 For each combo, based on the ad copy text, headline, and thumbnail image (if provided):
-1. Match the BEST angle by analyzing what hook/approach the ad uses
+1. Match the BEST angle by analyzing what hook/approach the ad uses (any global angle is allowed)
 2. Match 1-3 keypoints that the ad highlights
 
 Rules:
-- Angle and keypoints MUST be from the same branch as the combo
+- Angles are GLOBAL — pick any angle_id, regardless of branch
+- Keypoints MUST be from the SAME branch as the combo
 - Look at the actual ad copy content to determine the approach
 - KOL content that shows the property → match keypoints about what's shown
 - If copy mentions location/distance → match location keypoints
@@ -126,7 +127,7 @@ No markdown."""
 
     try:
         resp = client.messages.create(
-            model="claude-sonnet-4-20250514",
+            model="claude-sonnet-4-5",
             max_tokens=2000,
             messages=[{"role": "user", "content": messages_content}],
         )

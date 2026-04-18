@@ -22,20 +22,22 @@ celery_app.conf.update(
 
 # Celery Beat schedule (times in UTC — Asia/Taipei is UTC+8)
 celery_app.conf.beat_schedule = {
-    # Sync at 9:00 AM Taipei (01:00 UTC) and 3:00 PM Taipei (07:00 UTC)
-    "sync-all-platforms": {
-        "task": "app.tasks.sync_tasks.sync_all_platforms_task",
-        "schedule": crontab(hour="1,7", minute=0),
-    },
-    # Daily at 00:05 UTC (08:05 Asia/Taipei): re-enable yesterday's paused ads, then sync & evaluate
+    # Daily at 23:00 UTC (07:00 Asia/Taipei next day): re-enable yesterday's paused ads,
+    # sync all platforms, auto-classify combos, auto-assign angle+keypoints, eval rules.
     "daily-rule-cycle": {
         "task": "app.tasks.sync_tasks.daily_rule_cycle_task",
-        "schedule": crontab(hour=0, minute=5),
+        "schedule": crontab(hour=23, minute=0),
     },
-    # Daily at 02:00 UTC (10:00 Asia/Taipei): sync PMS reservations and run booking matching
+    # Daily at 00:00 UTC (08:00 Asia/Taipei): sync PMS reservations and run booking matching
     "sync-reservations-and-match": {
         "task": "app.tasks.sync_tasks.sync_reservations_and_match_task",
-        "schedule": crontab(hour=2, minute=0),
+        "schedule": crontab(hour=0, minute=0),
+    },
+    # Weekly on Monday at 01:00 UTC (09:00 Asia/Taipei): refresh Meta creative preview URLs
+    # (Meta CDN URLs expire after ~a few weeks; weekly refresh keeps thumbnails alive)
+    "sync-material-urls-weekly": {
+        "task": "app.tasks.sync_tasks.sync_material_urls_task",
+        "schedule": crontab(hour=1, minute=0, day_of_week=1),
     },
 }
 

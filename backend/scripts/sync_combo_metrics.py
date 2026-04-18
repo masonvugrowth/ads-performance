@@ -1,5 +1,11 @@
-"""Sync ad-level metrics from Meta into ad_combos table."""
+"""Sync ad-level metrics from Meta into ad_combos table.
+
+A combo is defined as a unique ad_name within a branch. Multiple Meta ads can
+share the same name (different ad_ids) — their metrics are SUMMED into one combo.
+"""
 import sys, io, os
+from collections import defaultdict
+
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
@@ -19,22 +25,47 @@ db = SessionLocal()
 accounts = db.query(AdAccount).filter(AdAccount.is_active.is_(True)).all()
 
 INSIGHT_FIELDS = [
-    'ad_name', 'spend', 'impressions', 'clicks', 'ctr',
-    'actions', 'action_values', 'cost_per_action_type',
+    'ad_name', 'spend', 'impressions', 'clicks',
+    'actions', 'action_values',
     'video_thruplay_watched_actions', 'video_p100_watched_actions',
     'video_play_actions', 'inline_post_engagement',
 ]
 
-PURCHASE_TYPES = {'purchase', 'offsite_conversion.fb_pixel_purchase'}
-updated = 0
+TIME_RANGE = {'since': '2025-06-01', 'until': '2026-04-14'}
+
+
+def is_purchase(action_type: str) -> bool:
+    """Use omni_purchase only — Meta's unified, pre-deduped purchase metric
+    that combines pixel + onsite + in-store + app purchases."""
+    return action_type == 'omni_purchase'
+
+
+def _first_value(arr):
+    """Pull integer value from Meta's [{'action_type':..., 'value':...}] list."""
+    if not arr:
+        return 0
+    try:
+        return int(arr[0].get('value', 0))
+    except (KeyError, ValueError, TypeError):
+        return 0
+
+
+total_combos_updated = 0
 
 for acc in accounts:
-    if not acc.access_token_enc:
+    if acc.platform != 'meta' or not acc.access_token_enc:
         continue
 
     acc_id = acc.account_id if acc.account_id.startswith('act_') else f'act_{acc.account_id}'
-    print(f"\n{'='*50}")
+    print(f"\n{'='*60}")
     print(f"{acc.account_name}")
+
+    # Aggregator: (branch_id, ad_name) -> totals dict
+    agg = defaultdict(lambda: {
+        'spend': 0.0, 'impressions': 0, 'clicks': 0,
+        'conversions': 0, 'revenue': 0.0, 'engagement': 0,
+        'video_plays': 0, 'thruplay': 0, 'video_p100': 0,
+    })
 
     try:
         FacebookAdsApi.init(app_id='', app_secret='', access_token=acc.access_token_enc)
@@ -42,17 +73,47 @@ for acc in accounts:
 
         ads = fb.get_ads(
             fields=['name'],
-            params={'limit': 200, 'filtering': [
-                {'field': 'ad.effective_status', 'operator': 'IN', 'value': ['ACTIVE', 'PAUSED']},
+            params={'limit': 500, 'filtering': [
+                {'field': 'ad.effective_status', 'operator': 'IN',
+                 'value': ['ACTIVE', 'PAUSED', 'ARCHIVED']},
             ]},
         )
 
+        ad_count = 0
         for ad in ads:
             ad_name = ad.get('name', '')
             if not ad_name:
                 continue
+            ad_count += 1
 
-            # Find matching combo
+            try:
+                insights = ad.get_insights(fields=INSIGHT_FIELDS, params={'time_range': TIME_RANGE})
+            except Exception:
+                continue
+
+            for row in insights:
+                bucket = agg[ad_name]
+                bucket['spend'] += float(row.get('spend', 0))
+                bucket['impressions'] += int(row.get('impressions', 0))
+                bucket['clicks'] += int(row.get('clicks', 0))
+                bucket['engagement'] += int(row.get('inline_post_engagement', 0))
+
+                for a in row.get('actions') or []:
+                    if is_purchase(a.get('action_type', '')):
+                        bucket['conversions'] += int(a.get('value', 0))
+                for av in row.get('action_values') or []:
+                    if is_purchase(av.get('action_type', '')):
+                        bucket['revenue'] += float(av.get('value', 0))
+
+                bucket['video_plays'] += _first_value(row.get('video_play_actions'))
+                bucket['thruplay'] += _first_value(row.get('video_thruplay_watched_actions'))
+                bucket['video_p100'] += _first_value(row.get('video_p100_watched_actions'))
+
+        print(f"  Fetched {ad_count} ads, aggregated into {len(agg)} unique ad_names")
+
+        # Apply aggregated metrics to combos
+        applied = 0
+        for ad_name, m in agg.items():
             combo = db.query(AdCombo).filter(
                 AdCombo.branch_id == acc.id,
                 AdCombo.ad_name == ad_name,
@@ -60,82 +121,47 @@ for acc in accounts:
             if not combo:
                 continue
 
-            # Fetch insights (last 30 days for meaningful data)
-            try:
-                insights = ad.get_insights(fields=INSIGHT_FIELDS, params={'date_preset': 'last_30d'})
-            except Exception:
-                continue
+            spend = m['spend']
+            impressions = m['impressions']
+            clicks = m['clicks']
+            conversions = m['conversions']
+            revenue = m['revenue']
+            engagement = m['engagement']
+            video_plays = m['video_plays']
+            thruplay = m['thruplay']
+            video_p100 = m['video_p100']
 
-            for row in insights:
-                spend = float(row.get('spend', 0))
-                impressions = int(row.get('impressions', 0))
-                clicks = int(row.get('clicks', 0))
-                ctr = float(row.get('ctr', 0))
-                engagement = int(row.get('inline_post_engagement', 0))
+            combo.spend = spend
+            combo.impressions = impressions
+            combo.clicks = clicks
+            combo.conversions = conversions
+            combo.revenue = revenue
+            combo.engagement = engagement
+            combo.video_plays = video_plays or None
+            combo.thruplay = thruplay or None
+            combo.video_p100 = video_p100 or None
 
-                # Parse purchase conversions + revenue
-                conversions = 0
-                revenue = 0.0
-                actions = row.get('actions') or []
-                action_values = row.get('action_values') or []
-                cost_per_actions = row.get('cost_per_action_type') or []
+            # Recomputed rates from aggregated totals
+            combo.roas = (revenue / spend) if spend > 0 else 0
+            combo.cost_per_purchase = (spend / conversions) if conversions > 0 else None
+            combo.ctr = (clicks / impressions) if impressions > 0 else None
+            combo.engagement_rate = (engagement / impressions) if impressions > 0 else None
+            combo.hook_rate = (video_plays / impressions) if video_plays and impressions > 0 else None
+            combo.thruplay_rate = (thruplay / video_plays) if thruplay and video_plays > 0 else None
+            combo.video_complete_rate = (video_p100 / video_plays) if video_p100 and video_plays > 0 else None
 
-                for a in actions:
-                    if a.get('action_type') in PURCHASE_TYPES:
-                        conversions += int(a.get('value', 0))
-                for av in action_values:
-                    if av.get('action_type') in PURCHASE_TYPES:
-                        revenue += float(av.get('value', 0))
+            applied += 1
+            roas_str = f"{combo.roas:.2f}x" if combo.roas else "—"
+            cpp_str = f"{float(combo.cost_per_purchase):,.0f}" if combo.cost_per_purchase else "—"
+            print(f"  {combo.combo_id} | spend={spend:>10,.0f} | conv={conversions:>3} | ROAS={roas_str:>7s} | CPP={cpp_str:>10s} | {ad_name[:50]}")
 
-                cost_per_purchase = None
-                for cpa in cost_per_actions:
-                    if cpa.get('action_type') in PURCHASE_TYPES:
-                        cost_per_purchase = float(cpa.get('value', 0))
-                        break
-
-                # Video metrics
-                video_plays_raw = row.get('video_play_actions') or []
-                thruplay_raw = row.get('video_thruplay_watched_actions') or []
-                p100_raw = row.get('video_p100_watched_actions') or []
-
-                video_plays = int(video_plays_raw[0]['value']) if video_plays_raw else None
-                thruplay = int(thruplay_raw[0]['value']) if thruplay_raw else None
-                video_p100 = int(p100_raw[0]['value']) if p100_raw else None
-
-                # Computed rates
-                roas = revenue / spend if spend > 0 else 0
-                engagement_rate = engagement / impressions if impressions > 0 else 0
-                hook_rate = video_plays / impressions if video_plays and impressions > 0 else None
-                thruplay_rate = thruplay / video_plays if thruplay and video_plays and video_plays > 0 else None
-                video_complete_rate = video_p100 / video_plays if video_p100 and video_plays and video_plays > 0 else None
-
-                # Update combo
-                combo.spend = spend
-                combo.impressions = impressions
-                combo.clicks = clicks
-                combo.conversions = conversions
-                combo.revenue = revenue
-                combo.roas = roas
-                combo.ctr = ctr / 100  # Meta returns % as 1.64, store as 0.0164
-                combo.cost_per_purchase = cost_per_purchase
-                combo.engagement = engagement
-                combo.engagement_rate = engagement_rate
-                combo.video_plays = video_plays
-                combo.thruplay = thruplay
-                combo.video_p100 = video_p100
-                combo.hook_rate = hook_rate
-                combo.thruplay_rate = thruplay_rate
-                combo.video_complete_rate = video_complete_rate
-
-                updated += 1
-                roas_str = f"{roas:.2f}x" if roas else "—"
-                hook_str = f"{hook_rate*100:.1f}%" if hook_rate else "—"
-                print(f"  {combo.combo_id} | ROAS={roas_str:>7s} | CPP={cost_per_purchase or 0:>10,.0f} | Hook={hook_str:>6s} | {ad_name[:40]}")
+        total_combos_updated += applied
+        print(f"  Applied to {applied}/{len(agg)} combos in DB")
 
     except Exception as e:
         print(f"  ERROR: {e}")
 
 db.commit()
 db.close()
-print(f"\n{'='*50}")
-print(f"DONE! Updated {updated} combos with real metrics")
+print(f"\n{'='*60}")
+print(f"DONE! Total combos updated: {total_combos_updated}")

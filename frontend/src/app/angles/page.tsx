@@ -15,6 +15,7 @@ interface Angle {
   linked_ads: { combo_id: string; ad_name: string | null; roas: number | null }[]
   avg_hook_rate: number | null; avg_thruplay_rate: number | null
   avg_engagement_rate: number | null
+  branch_verdict: string | null; branch_benchmark: number | null
 }
 interface Account { id: string; account_name: string; platform: string }
 
@@ -121,16 +122,27 @@ export default function AnglesPage() {
       {loading ? <div className="text-gray-500 text-center py-8">Loading...</div> : angles.length === 0 ? <div className="bg-white rounded-xl border p-8 text-center text-gray-400">No angles match filters.</div> : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {angles.map(a => (
-            <div key={a.id} className={`rounded-xl border p-5 ${STATUS_COLORS[a.status] || 'bg-white border-gray-200'}`}>
+            <div key={a.id} className={`rounded-xl border p-5 ${STATUS_COLORS[(fBranch && a.branch_verdict) || a.status] || 'bg-white border-gray-200'}`}>
               {/* Header */}
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-2">
                   <span className="font-mono text-xs text-gray-500">{a.angle_id}</span>
-                  <span className="text-[10px] text-gray-400">{accName(a.branch_id)}</span>
+                  <span className="text-[10px] text-gray-400">
+                    {fBranch ? accName(fBranch) : 'All branches'}
+                  </span>
                 </div>
-                <select value={a.status} onChange={e => updateStatus(a.angle_id, e.target.value)} className={`text-xs px-2 py-0.5 rounded font-medium border-0 ${STATUS_BADGE[a.status] || ''}`}>
-                  <option value="WIN">WIN</option><option value="TEST">TEST</option><option value="LOSE">LOSE</option>
-                </select>
+                {fBranch && a.branch_verdict ? (
+                  <span
+                    title={a.branch_benchmark ? `Branch benchmark ROAS: ${a.branch_benchmark.toFixed(2)}x` : 'Auto-computed from branch metrics'}
+                    className={`text-xs px-2 py-0.5 rounded font-medium ${STATUS_BADGE[a.branch_verdict] || ''}`}
+                  >
+                    {a.branch_verdict}
+                  </span>
+                ) : (
+                  <select value={a.status} onChange={e => updateStatus(a.angle_id, e.target.value)} className={`text-xs px-2 py-0.5 rounded font-medium border-0 ${STATUS_BADGE[a.status] || ''}`}>
+                    <option value="WIN">WIN</option><option value="TEST">TEST</option><option value="LOSE">LOSE</option>
+                  </select>
+                )}
               </div>
 
               {/* Angle Type */}

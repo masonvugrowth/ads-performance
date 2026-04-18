@@ -164,14 +164,13 @@ def fetch_campaign_insights(
         )
 
         # Action types to extract from Meta's actions array.
-        # Use ONLY offsite_conversion.fb_pixel_* types to avoid double counting.
-        # Meta returns the same event under multiple action_type keys
-        # (e.g. "add_to_cart" AND "offsite_conversion.fb_pixel_add_to_cart").
-        PURCHASE_TYPES = {"offsite_conversion.fb_pixel_purchase"}
-        ADD_TO_CART_TYPES = {"offsite_conversion.fb_pixel_add_to_cart"}
-        CHECKOUT_TYPES = {"offsite_conversion.fb_pixel_initiate_checkout"}
-        SEARCH_TYPES = {"offsite_conversion.fb_pixel_search"}
-        LEAD_TYPES = {"offsite_conversion.fb_pixel_lead"}
+        # Use omni_* (Meta's pre-deduped unified metrics covering pixel + onsite + in-store + app).
+        # Meta returns the same event under multiple action_type keys — omni_* is the canonical unified one.
+        PURCHASE_TYPES = {"omni_purchase"}  # Meta's unified deduped purchase metric
+        ADD_TO_CART_TYPES = {"omni_add_to_cart"}
+        CHECKOUT_TYPES = {"omni_initiated_checkout"}
+        SEARCH_TYPES = {"omni_search"}
+        LEAD_TYPES = {"lead"}  # no omni equivalent for lead
         LANDING_PAGE_TYPES = {"landing_page_view"}
 
         results = []
@@ -316,7 +315,7 @@ def fetch_ads(account_id: str, access_token: str) -> list[dict]:
 
 def _parse_insights_rows(rows, entity_id_key: str) -> list[dict]:
     """Shared parser for insight rows at any level (campaign/adset/ad)."""
-    # Use ONLY offsite_conversion.fb_pixel_* to avoid double counting.
+    # Use omni_* (Meta's pre-deduped unified metrics covering all channels).
     PURCHASE_TYPES = {"offsite_conversion.fb_pixel_purchase"}
     ADD_TO_CART_TYPES = {"offsite_conversion.fb_pixel_add_to_cart"}
     CHECKOUT_TYPES = {"offsite_conversion.fb_pixel_initiate_checkout"}

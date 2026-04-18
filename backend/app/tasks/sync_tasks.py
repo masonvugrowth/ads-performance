@@ -3,6 +3,7 @@ from datetime import date, timedelta
 
 from app.database import SessionLocal
 from app.services.booking_match_service import run_matching
+from app.services.material_url_sync import sync_material_urls
 from app.services.reservation_sync import sync_reservations
 from app.services.sync_engine import sync_all_platforms
 from app.services.rule_engine import evaluate_all_rules, reenable_paused_ads
@@ -87,5 +88,26 @@ def sync_reservations_and_match_task(self, days_back: int = 30):
     except Exception as exc:
         logger.exception("Reservation sync + match task failed")
         raise self.retry(exc=exc, countdown=120)
+    finally:
+        db.close()
+
+
+@celery_app.task(name="app.tasks.sync_tasks.sync_material_urls_task", bind=True, max_retries=2)
+def sync_material_urls_task(self):
+    """Refresh ad_materials.file_url from Meta AdCreative preview URLs.
+
+    Runs weekly (configured in Celery Beat). Deduped by ad_name — only fetches
+    each unique ad_name once per run. Meta CDN URLs expire after ~a few weeks,
+    weekly refresh keeps thumbnails alive in the UI without hammering the API.
+    """
+    logger.info("Starting weekly material URL sync")
+    db = SessionLocal()
+    try:
+        summary = sync_material_urls(db)
+        logger.info("Material URL sync completed: %s", summary)
+        return summary
+    except Exception as exc:
+        logger.exception("Material URL sync task failed")
+        raise self.retry(exc=exc, countdown=300)
     finally:
         db.close()

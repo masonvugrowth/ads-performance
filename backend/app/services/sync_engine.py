@@ -21,6 +21,7 @@ from app.services.meta_client import (
 )
 from app.services.rule_engine import evaluate_all_rules
 from app.services.creative_service import auto_classify_all_combos
+from app.services.angle_assign_service import assign_angles_for_new_combos
 
 logger = logging.getLogger(__name__)
 
@@ -378,6 +379,14 @@ def sync_all_platforms(db: Session) -> list[dict]:
         auto_classify_all_combos(db)
     except Exception:
         logger.exception("Auto-classify combos failed after sync")
+
+    # After sync: auto-assign angle + keypoints to new combos (incremental)
+    try:
+        summary = assign_angles_for_new_combos(db)
+        if summary.get("updated", 0) > 0:
+            logger.info("Angle assignment: %s", summary)
+    except Exception:
+        logger.exception("Angle/keypoint auto-assign failed after sync")
 
     # After sync: evaluate automation rules
     try:

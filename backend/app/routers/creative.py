@@ -16,7 +16,7 @@ from app.models.ad_material import AdMaterial
 from app.models.keypoint import BranchKeypoint
 from app.models.user import User
 from app.services.creative_service import (
-    auto_classify_all_combos, next_angle_id, next_combo_id,
+    auto_classify_all_combos, classify_verdict, next_angle_id, next_combo_id,
     next_copy_id, next_material_id, propagate_derived_verdicts,
 )
 
@@ -79,6 +79,19 @@ def list_keypoints(
                 m["clicks"] += int(combo.clicks or 0)
                 m["conversions"] += int(combo.conversions or 0)
 
+        # Compute benchmark ROAS per branch (total revenue / total spend)
+        from sqlalchemy import func as sqlfunc
+        bench_rows = db.query(
+            AdCombo.branch_id,
+            sqlfunc.sum(AdCombo.spend).label("s"),
+            sqlfunc.sum(AdCombo.revenue).label("r"),
+        ).group_by(AdCombo.branch_id).all()
+        benchmarks: dict[str, float] = {}
+        for br in bench_rows:
+            s = float(br.s or 0)
+            rv = float(br.r or 0)
+            benchmarks[br.branch_id] = rv / s if s > 0 else 0
+
         result = []
         for r in rows:
             m = kp_metrics.get(r.id, {})
@@ -86,15 +99,22 @@ def list_keypoints(
             revenue = m.get("revenue", 0)
             impressions = m.get("impressions", 0)
             clicks = m.get("clicks", 0)
+            conversions = m.get("conversions", 0)
+            roas = revenue / spend if spend > 0 else 0
+            bench = benchmarks.get(r.branch_id, 0)
+            verdict = classify_verdict(clicks, conversions, roas, bench) if m.get("combos", 0) > 0 else "TEST"
             result.append({
                 "id": r.id, "branch_id": r.branch_id, "category": r.category,
                 "title": r.title,
                 "combos": m.get("combos", 0),
                 "spend": spend,
                 "revenue": revenue,
-                "roas": revenue / spend if spend > 0 else 0,
-                "conversions": m.get("conversions", 0),
+                "roas": roas,
+                "clicks": clicks,
+                "conversions": conversions,
                 "ctr": clicks / impressions if impressions > 0 else 0,
+                "benchmark_roas": bench,
+                "verdict": verdict,
             })
         return _api_response(data=result)
     except Exception as e:
@@ -175,15 +195,27 @@ def list_angles(
     db: Session = Depends(get_db),
 ):
     try:
+        # Angles are global (branch_id = NULL for all). Branch filter scopes
+        # the combo metrics below, not the angle list itself.
         q = db.query(AdAngle)
-        if branch_id:
-            q = q.filter(AdAngle.branch_id == branch_id)
         if status:
             q = q.filter(AdAngle.status == status)
         rows = q.order_by(AdAngle.angle_id).all()
 
-        # Aggregate combo metrics per angle
-        angle_combos = db.query(AdCombo).filter(AdCombo.angle_id.isnot(None)).all()
+        # Aggregate combo metrics per angle — scoped to branch if provided
+        combo_q = db.query(AdCombo).filter(AdCombo.angle_id.isnot(None))
+        if branch_id:
+            combo_q = combo_q.filter(AdCombo.branch_id == branch_id)
+        angle_combos = combo_q.all()
+
+        # Branch benchmark ROAS = total revenue / total spend of all combos in that branch.
+        # Used to derive per-branch verdict for each angle (WIN/TEST/LOSE).
+        branch_benchmark = 0.0
+        if branch_id:
+            branch_combos = db.query(AdCombo).filter(AdCombo.branch_id == branch_id).all()
+            b_spend = sum(float(c.spend or 0) for c in branch_combos)
+            b_rev = sum(float(c.revenue or 0) for c in branch_combos)
+            branch_benchmark = b_rev / b_spend if b_spend > 0 else 0.0
         ang_metrics: dict[str, dict] = {}
         for combo in angle_combos:
             aid = combo.angle_id
@@ -209,9 +241,23 @@ def list_angles(
             revenue = m.get("revenue", 0)
             impressions = m.get("impressions", 0)
             clicks = m.get("clicks", 0)
+            conversions = m.get("conversions", 0)
             hook_rates = m.get("hook_rates", [])
             thruplay_rates = m.get("thruplay_rates", [])
             eng_rates = m.get("eng_rates", [])
+            roas = revenue / spend if spend > 0 else 0
+
+            # Per-branch verdict using angle rules (2x combo thresholds):
+            # TEST if clicks ≤ 9,000 AND bookings < 10, else WIN/LOSE vs branch benchmark.
+            branch_verdict = None
+            if branch_id:
+                if clicks <= 9000 and conversions < 10:
+                    branch_verdict = "TEST"
+                elif branch_benchmark > 0 and roas >= branch_benchmark:
+                    branch_verdict = "WIN"
+                else:
+                    branch_verdict = "LOSE"
+
             result.append({
                 "id": r.id, "angle_id": r.angle_id, "branch_id": r.branch_id,
                 "angle_type": r.angle_type or r.hook or "",
@@ -222,13 +268,15 @@ def list_angles(
                 "combos": m.get("combos", 0),
                 "spend": spend,
                 "revenue": revenue,
-                "roas": revenue / spend if spend > 0 else 0,
-                "conversions": m.get("conversions", 0),
+                "roas": roas,
+                "conversions": conversions,
                 "ctr": clicks / impressions if impressions > 0 else 0,
                 "avg_hook_rate": sum(hook_rates) / len(hook_rates) if hook_rates else None,
                 "avg_thruplay_rate": sum(thruplay_rates) / len(thruplay_rates) if thruplay_rates else None,
                 "avg_engagement_rate": sum(eng_rates) / len(eng_rates) if eng_rates else None,
                 "linked_ads": m.get("linked_ads", []),
+                "branch_verdict": branch_verdict,
+                "branch_benchmark": branch_benchmark if branch_id else None,
             })
         return _api_response(data=result)
     except Exception as e:
