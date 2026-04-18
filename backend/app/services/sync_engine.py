@@ -21,6 +21,7 @@ from app.services.meta_client import (
 )
 from app.services.rule_engine import evaluate_all_rules
 from app.services.creative_service import auto_classify_all_combos
+from app.services.creative_sync import sync_creative_library_for_account
 from app.services.angle_assign_service import assign_angles_for_new_combos
 
 logger = logging.getLogger(__name__)
@@ -96,6 +97,9 @@ def sync_meta_account(db: Session, account: AdAccount) -> dict:
         "adsets_synced": 0,
         "ads_synced": 0,
         "metrics_synced": 0,
+        "materials_created": 0,
+        "copies_created": 0,
+        "combos_created": 0,
         "errors": [],
     }
 
@@ -335,13 +339,30 @@ def sync_meta_account(db: Session, account: AdAccount) -> dict:
         summary["metrics_synced"] += 1
 
     db.commit()
+
+    # --- 7. Upsert creative library (materials, copies, combos) from Meta ad creatives ---
+    try:
+        creative_summary = sync_creative_library_for_account(db, account)
+        summary["materials_created"] = creative_summary.get("materials_created", 0)
+        summary["copies_created"] = creative_summary.get("copies_created", 0)
+        summary["combos_created"] = creative_summary.get("combos_created", 0)
+        if creative_summary.get("errors"):
+            summary["errors"].extend(creative_summary["errors"])
+    except Exception as e:
+        logger.exception("Creative library sync failed for account %s", account.account_id)
+        summary["errors"].append(f"Creative library sync failed: {e}")
+
     logger.info(
-        "Meta sync complete for account %s: %d campaigns, %d ad sets, %d ads, %d metrics rows",
+        "Meta sync complete for account %s: %d campaigns, %d ad sets, %d ads, %d metrics, "
+        "%d materials, %d copies, %d combos",
         account.account_id,
         summary["campaigns_synced"],
         summary["adsets_synced"],
         summary["ads_synced"],
         summary["metrics_synced"],
+        summary["materials_created"],
+        summary["copies_created"],
+        summary["combos_created"],
     )
     return summary
 
