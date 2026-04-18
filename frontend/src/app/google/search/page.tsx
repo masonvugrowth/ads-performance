@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
+import RecommendationsSummary from '@/components/RecommendationsSummary'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
@@ -58,6 +59,8 @@ export default function SearchCampaignsPage() {
           <p className="text-sm text-gray-500">{campaigns.length} campaigns</p>
         </div>
       </div>
+
+      <RecommendationsSummary />
 
       <div className="bg-white rounded-xl border border-gray-200">
         <div className="overflow-x-auto">

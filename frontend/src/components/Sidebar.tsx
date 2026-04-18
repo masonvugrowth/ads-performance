@@ -44,6 +44,7 @@ const navSections: NavSection[] = [
     items: [
       { href: '/google/pmax', label: 'PMax Campaigns', section: 'google_ads' },
       { href: '/google/search', label: 'Search Campaigns', section: 'google_ads' },
+      { href: '/google/recommendations', label: 'Recommendations', section: 'google_ads' },
     ],
   },
   {

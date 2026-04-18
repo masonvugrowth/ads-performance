@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
+import RecommendationsSummary from '@/components/RecommendationsSummary'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
@@ -75,6 +76,8 @@ export default function PMaxPage() {
           <p className="text-sm text-gray-500">{campaigns.length} campaigns, {assetGroups.length} asset groups</p>
         </div>
       </div>
+
+      <RecommendationsSummary />
 
       {campaigns.length === 0 ? (
         <div className="bg-white rounded-xl border border-gray-200 p-10 text-center text-gray-400">

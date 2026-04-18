@@ -17,6 +17,7 @@ from app.routers import (
     creative,
     export,
     google_campaigns,
+    google_recommendations,
     launch,
     notifications,
     rules,
@@ -61,6 +62,7 @@ app.include_router(approvals.router, prefix="/api", tags=["approvals"])
 app.include_router(launch.router, prefix="/api", tags=["launch"])
 app.include_router(notifications.router, prefix="/api", tags=["notifications"])
 app.include_router(google_campaigns.router, prefix="/api", tags=["google-ads"])
+app.include_router(google_recommendations.router, prefix="/api", tags=["google-recommendations"])
 app.include_router(transcriptions.router, prefix="/api", tags=["transcriptions"])
 app.include_router(booking_matches.router, prefix="/api", tags=["booking-matches"])
 

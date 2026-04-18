@@ -39,6 +39,31 @@ celery_app.conf.beat_schedule = {
         "task": "app.tasks.sync_tasks.sync_material_urls_task",
         "schedule": crontab(hour=1, minute=0, day_of_week=1),
     },
+    # Google Ads Power Pack recommendation engine.
+    # Times are UTC; Asia/Ho_Chi_Minh is UTC+7 (i.e. 22:30 UTC = 05:30 local).
+    "google-recs-daily": {
+        "task": "app.tasks.google_recommendation_tasks.daily_google_recommendations_task",
+        "schedule": crontab(hour=22, minute=30),
+    },
+    "google-recs-weekly": {
+        "task": "app.tasks.google_recommendation_tasks.weekly_google_recommendations_task",
+        # Monday 23:00 UTC = Tuesday 06:00 Asia/Ho_Chi_Minh.
+        "schedule": crontab(hour=23, minute=0, day_of_week=1),
+    },
+    "google-recs-monthly": {
+        "task": "app.tasks.google_recommendation_tasks.monthly_google_recommendations_task",
+        # 1st of month 23:30 UTC = 2nd 06:30 local.
+        "schedule": crontab(hour=23, minute=30, day_of_month=1),
+    },
+    "google-recs-seasonality": {
+        "task": "app.tasks.google_recommendation_tasks.seasonality_lookahead_task",
+        # 21:00 UTC = 04:00 local the next day.
+        "schedule": crontab(hour=21, minute=0),
+    },
+    "google-recs-expire": {
+        "task": "app.tasks.google_recommendation_tasks.expire_google_recommendations_task",
+        "schedule": crontab(minute=15),  # hourly at :15
+    },
 }
 
 # Auto-discover tasks

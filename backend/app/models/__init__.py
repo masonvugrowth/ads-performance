@@ -15,6 +15,9 @@ from app.models.spy_saved_ad import SpySavedAd
 from app.models.spy_analysis_report import SpyAnalysisReport
 from app.models.google_asset_group import GoogleAssetGroup
 from app.models.google_asset import GoogleAsset
+from app.models.google_recommendation import GoogleRecommendation
+from app.models.google_seasonality_event import GoogleSeasonalityEvent
+from app.models.google_search_term_pattern import GoogleSearchTermPattern
 from app.models.user import User
 from app.models.user_permission import UserPermission
 
@@ -29,6 +32,9 @@ __all__ = [
     "Campaign",
     "GoogleAssetGroup",
     "GoogleAsset",
+    "GoogleRecommendation",
+    "GoogleSeasonalityEvent",
+    "GoogleSearchTermPattern",
     "MetricsCache",
     "Reservation",
     "AutomationRule",

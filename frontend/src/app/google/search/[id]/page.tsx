@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
+import RecBadge from '@/components/RecBadge'
 import Link from 'next/link'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
@@ -172,8 +173,9 @@ export default function SearchCampaignDetail() {
           <Link href="/google/search" className="text-gray-400 hover:text-gray-600">&larr;</Link>
           <div>
             <h1 className="text-2xl font-bold text-gray-900">{campaign.name}</h1>
-            <div className="flex items-center gap-3 mt-1">
+            <div className="flex items-center gap-3 mt-1 flex-wrap">
               <span className="text-xs bg-green-50 text-green-700 px-2 py-0.5 rounded-full font-medium">SEARCH</span>
+              <RecBadge campaignId={campaign.id} />
               <span className={`text-xs font-medium ${campaign.status === 'ACTIVE' ? 'text-green-600' : 'text-gray-400'}`}>
                 {campaign.status}
               </span>

@@ -231,3 +231,137 @@ def update_campaign_budget(
     except Exception:
         logger.exception("Failed to update budget for Google campaign %s", platform_campaign_id)
         raise
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Power Pack recommendation actions
+# These back `/google/recommendations/{id}/apply`. Any function added here
+# must be listed in applier.ACTION_DISPATCH.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def update_tcpa_target(
+    customer_id: str, platform_campaign_id: str, new_tcpa_micros: int,
+) -> bool:
+    """Update Target CPA on a campaign's bidding strategy (micros).
+
+    Used by PMAX_LEARNING_STUCK and SEASONALITY_TCPA_ADJUST_DUE. The campaign
+    must already be on a TargetCpa or MaximizeConversions-with-tCPA strategy.
+    """
+    customer_id = customer_id.replace("-", "")
+    client = _get_client()
+    try:
+        campaign_service = client.get_service("CampaignService")
+        operation = client.get_type("CampaignOperation")
+        campaign = operation.update
+        campaign.resource_name = campaign_service.campaign_path(
+            customer_id, platform_campaign_id,
+        )
+        campaign.maximize_conversions.target_cpa_micros = int(new_tcpa_micros)
+        client.copy_from(
+            operation.update_mask,
+            client.get_type("FieldMask")(paths=["maximize_conversions.target_cpa_micros"]),
+        )
+        campaign_service.mutate_campaigns(
+            customer_id=customer_id, operations=[operation],
+        )
+        logger.info(
+            "Updated tCPA for Google campaign %s to %d micros",
+            platform_campaign_id, new_tcpa_micros,
+        )
+        return True
+    except GoogleAdsException as ex:
+        logger.exception(
+            "Google Ads API error updating tCPA for campaign %s: %s",
+            platform_campaign_id, ex.failure,
+        )
+        raise
+
+
+# ── Stubs for actions not yet fully implemented in the Google Ads SDK layer ──
+# Each raises NotImplementedError with a message that the recommendation
+# applier surfaces as a 409 Conflict with actionable guidance for manual work.
+
+class ManualActionRequired(RuntimeError):
+    """Raised by stubs to signal that the operation must be done in Google Ads UI."""
+
+
+def _manual_only(name: str, guidance: str) -> None:
+    raise ManualActionRequired(
+        f"{name} must be applied manually in Google Ads UI. {guidance}",
+    )
+
+
+def switch_bid_strategy(customer_id: str, platform_campaign_id: str, **kwargs) -> bool:
+    _manual_only(
+        "switch_bid_strategy",
+        "Open the campaign → Settings → Bidding, and switch to the recommended strategy.",
+    )
+    return False  # unreachable
+
+
+def add_negative_keywords(customer_id: str, shared_set_id: str, keywords: list[str]) -> bool:
+    _manual_only(
+        "add_negative_keywords",
+        "Open Shared Library → Negative keyword lists, and add the listed keywords.",
+    )
+    return False
+
+
+def pin_rsa_headline(customer_id: str, platform_ad_id: str, headline_text: str) -> bool:
+    _manual_only(
+        "pin_rsa_headline",
+        "Open the RSA → Edit → Pin the brand headline to position 1.",
+    )
+    return False
+
+
+def disable_final_url_expansion(customer_id: str, platform_campaign_id: str) -> bool:
+    _manual_only(
+        "disable_final_url_expansion",
+        "Open the campaign → Settings → AI Max, and turn off Final URL Expansion.",
+    )
+    return False
+
+
+def disable_aimax(customer_id: str, platform_campaign_id: str) -> bool:
+    _manual_only(
+        "disable_aimax",
+        "Open the campaign → Settings → AI Max, and disable the feature entirely.",
+    )
+    return False
+
+
+def disable_optimized_targeting(customer_id: str, platform_campaign_id: str) -> bool:
+    _manual_only(
+        "disable_optimized_targeting",
+        "Open the campaign → Audiences, and turn off Optimized Targeting.",
+    )
+    return False
+
+
+def cap_campaign_frequency(
+    customer_id: str, platform_campaign_id: str, max_per_week: int,
+) -> bool:
+    _manual_only(
+        "cap_campaign_frequency",
+        "Open the campaign → Settings → Frequency, and set the weekly cap.",
+    )
+    return False
+
+
+def rebalance_budget_mix(
+    customer_id: str, campaign_budget_plan: list[dict],
+) -> bool:
+    """Apply a computed budget plan across campaigns in one account.
+
+    Plan format: [{"platform_campaign_id": str, "new_budget_micros": int}, ...].
+    Calls update_campaign_budget per entry; any failure aborts the rest.
+    """
+    for entry in campaign_budget_plan:
+        update_campaign_budget(
+            customer_id,
+            entry["platform_campaign_id"],
+            int(entry["new_budget_micros"]),
+        )
+    return True
