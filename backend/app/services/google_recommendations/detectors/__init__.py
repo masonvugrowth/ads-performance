@@ -3,16 +3,12 @@
 Each module below registers one detector via @register. Importing this package
 triggers all @register decorators.
 
-Currently implemented (13 detectors that work with existing synced data):
+Currently implemented:
 - Phase 3 smoke-test detectors (5)
-- Phase 6 extensions (8)
-
-Detectors requiring sync_engine expansion (ad_strength, bidding_strategy_type,
-attribution_model, AI Max settings, impression_share, search_term_report,
-brand_exclusions list, audience signals, conversion action metadata,
-policy_summary) are tracked in the plan file but not yet implemented here —
-they would register but never fire until google_sync_engine captures those
-fields.
+- Phase 6 extensions (12)
+- Phase 7 PMax full-coverage (4) — depend on google_sync_engine fields
+  bidding_strategy_type, target_cpa_micros, target_roas, audience_signals,
+  has_brand_exclusion which are populated in google_sync_engine.
 """
 
 from app.services.google_recommendations.detectors import (  # noqa: F401
@@ -35,4 +31,9 @@ from app.services.google_recommendations.detectors import (  # noqa: F401
     conv_ads_vs_pms_delta,
     seasonality_tcpa_adjust_due,
     low_season_shift_to_demandgen,
+    # Phase 7 PMax full-coverage
+    pmax_missing_audience_signal,
+    pmax_bid_strategy_lifecycle_mismatch,
+    pmax_count_vs_scale,
+    pmax_missing_brand_exclusion,
 )

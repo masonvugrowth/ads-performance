@@ -194,8 +194,16 @@ def _resolve_kwargs(
         # Build per-campaign plan from the stored action_kwargs.
         plan = _build_budget_rebalance_plan(db, rec, kwargs)
         out["campaign_budget_plan"] = plan
+    elif function_name == "switch_bid_strategy":
+        out["new_strategy"] = kwargs.get("new_strategy")
+        if kwargs.get("target_cpa_micros") is not None:
+            out["target_cpa_micros"] = int(kwargs["target_cpa_micros"])
+        elif kwargs.get("target_cpa") is not None:
+            out["target_cpa_micros"] = int(float(kwargs["target_cpa"]) * 1_000_000)
+        if kwargs.get("target_roas") is not None:
+            out["target_roas"] = float(kwargs["target_roas"])
     elif function_name in (
-        "switch_bid_strategy", "disable_final_url_expansion", "disable_aimax",
+        "disable_final_url_expansion", "disable_aimax",
         "disable_optimized_targeting",
     ):
         # No extra args needed beyond platform_campaign_id.

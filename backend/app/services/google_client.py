@@ -85,9 +85,21 @@ def _search_stream(client: GoogleAdsClient, customer_id: str, query: str) -> lis
     return rows
 
 
+def _parse_date_str(s: str | None):
+    """Parse a Google Ads date string (YYYY-MM-DD). Returns date or None."""
+    if not s:
+        return None
+    try:
+        return date.fromisoformat(s)
+    except (ValueError, TypeError):
+        return None
+
+
 def fetch_campaigns(customer_id: str) -> list[dict]:
     """Fetch all active/paused campaigns for a Google Ads account.
 
+    Pulls PMax-relevant fields (bidding strategy type, tCPA/tROAS targets,
+    start_date, url_expansion opt-out) for the recommendation engine.
     Returns list of dicts compatible with the campaigns table schema.
     """
     customer_id = customer_id.replace("-", "")
@@ -99,6 +111,14 @@ def fetch_campaigns(customer_id: str) -> list[dict]:
             campaign.name,
             campaign.status,
             campaign.advertising_channel_type,
+            campaign.start_date,
+            campaign.end_date,
+            campaign.bidding_strategy_type,
+            campaign.maximize_conversions.target_cpa_micros,
+            campaign.maximize_conversion_value.target_roas,
+            campaign.target_cpa.target_cpa_micros,
+            campaign.target_roas.target_roas,
+            campaign.url_expansion_opt_out,
             campaign_budget.amount_micros
         FROM campaign
         WHERE campaign.status != 'REMOVED'
@@ -110,6 +130,20 @@ def fetch_campaigns(customer_id: str) -> list[dict]:
         for row in rows:
             c = row.campaign
             campaign_type = _enum_name(c.advertising_channel_type)
+            bidding_strategy_type = _enum_name(c.bidding_strategy_type) if c.bidding_strategy_type else None
+
+            # Both campaign.maximize_conversions.target_cpa_micros AND
+            # campaign.target_cpa.target_cpa_micros can appear — use whichever is set.
+            tcpa_micros = (
+                c.maximize_conversions.target_cpa_micros
+                or c.target_cpa.target_cpa_micros
+                or None
+            )
+            troas = (
+                c.maximize_conversion_value.target_roas
+                or c.target_roas.target_roas
+                or None
+            )
             results.append({
                 "platform_campaign_id": str(c.id),
                 "name": c.name,
@@ -119,12 +153,16 @@ def fetch_campaigns(customer_id: str) -> list[dict]:
                     row.campaign_budget.amount_micros if row.campaign_budget else None
                 ),
                 "lifetime_budget": None,  # Google uses daily budgets
-                "start_date": None,
-                "end_date": None,
+                "start_date": _parse_date_str(c.start_date),
+                "end_date": _parse_date_str(c.end_date),
                 "raw_data": {
                     "campaign_id": str(c.id),
                     "campaign_type": campaign_type,
                     "budget_micros": row.campaign_budget.amount_micros if row.campaign_budget else None,
+                    "bidding_strategy_type": bidding_strategy_type,
+                    "target_cpa_micros": int(tcpa_micros) if tcpa_micros else None,
+                    "target_roas": float(troas) if troas else None,
+                    "url_expansion_opt_out": bool(c.url_expansion_opt_out),
                 },
             })
         logger.info("Fetched %d campaigns from Google account %s", len(results), customer_id)
@@ -235,8 +273,52 @@ def fetch_ads(customer_id: str) -> list[dict]:
         raise
 
 
+def _fetch_asset_group_signals(client: GoogleAdsClient, customer_id: str) -> dict[str, list[dict]]:
+    """Return {asset_group_id: [{signal_type, resource_name}, ...]}.
+
+    asset_group_signal links an asset group to a Customer Match, remarketing
+    list, custom-intent, or lookalike audience. PMax asset groups without any
+    signal learn slower — that's what PMAX_MISSING_AUDIENCE_SIGNAL checks.
+    """
+    query = """
+        SELECT
+            asset_group_signal.asset_group,
+            asset_group_signal.audience,
+            asset_group_signal.search_theme.text
+        FROM asset_group_signal
+    """
+    out: dict[str, list[dict]] = {}
+    try:
+        rows = _search_stream(client, customer_id, query)
+    except GoogleAdsException:
+        logger.exception("Failed to fetch asset_group_signal for %s", customer_id)
+        return out
+    except Exception:
+        logger.exception("asset_group_signal query crashed for %s", customer_id)
+        return out
+
+    for row in rows:
+        ags = row.asset_group_signal
+        asset_group_resource = ags.asset_group
+        # resource name format: customers/{cid}/assetGroups/{id}
+        asset_group_id = asset_group_resource.split("/")[-1]
+        audience_rn = ags.audience
+        search_theme = ags.search_theme.text if ags.search_theme else None
+        if audience_rn:
+            out.setdefault(asset_group_id, []).append({
+                "signal_type": "AUDIENCE",
+                "resource_name": audience_rn,
+            })
+        elif search_theme:
+            out.setdefault(asset_group_id, []).append({
+                "signal_type": "SEARCH_THEME",
+                "text": search_theme,
+            })
+    return out
+
+
 def fetch_asset_groups(customer_id: str) -> list[dict]:
-    """Fetch PMax asset groups."""
+    """Fetch PMax asset groups and their audience/search-theme signals."""
     customer_id = customer_id.replace("-", "")
     client = _get_client()
 
@@ -252,18 +334,24 @@ def fetch_asset_groups(customer_id: str) -> list[dict]:
     """
 
     try:
+        signals_by_ag = _fetch_asset_group_signals(client, customer_id)
         rows = _search_stream(client, customer_id, query)
         results = []
         for row in rows:
             ag = row.asset_group
-            # Get final_urls via a separate query or from listing signals
+            ag_id = str(ag.id)
+            signals = signals_by_ag.get(ag_id, [])
             results.append({
-                "platform_asset_group_id": str(ag.id),
+                "platform_asset_group_id": ag_id,
                 "campaign_id": str(row.campaign.id),
                 "name": ag.name,
                 "status": _normalize_status(ag.status),
                 "final_urls": [],
-                "raw_data": {"asset_group_id": str(ag.id)},
+                "raw_data": {
+                    "asset_group_id": ag_id,
+                    "audience_signals": signals,
+                    "signal_count": len(signals),
+                },
             })
         logger.info("Fetched %d asset groups from Google account %s", len(results), customer_id)
         return results
@@ -273,6 +361,48 @@ def fetch_asset_groups(customer_id: str) -> list[dict]:
     except Exception:
         logger.exception("Failed to fetch asset groups from Google account %s", customer_id)
         raise
+
+
+def fetch_campaign_brand_exclusions(customer_id: str) -> set[str]:
+    """Return set of platform_campaign_ids that have a BRAND_LIST asset set attached.
+
+    For PMax, a Brand Exclusion list is attached via campaign_asset_set where
+    asset_set.type = BRAND_LIST. Campaigns not in the returned set have no
+    brand exclusion — what PMAX_MISSING_BRAND_EXCLUSION flags.
+    """
+    customer_id = customer_id.replace("-", "")
+    client = _get_client()
+
+    query = """
+        SELECT
+            campaign_asset_set.campaign,
+            campaign_asset_set.asset_set,
+            asset_set.type
+        FROM campaign_asset_set
+        WHERE campaign_asset_set.status = 'ENABLED'
+    """
+    try:
+        rows = _search_stream(client, customer_id, query)
+    except GoogleAdsException:
+        logger.exception("Failed to fetch campaign_asset_set for %s", customer_id)
+        return set()
+    except Exception:
+        logger.exception("campaign_asset_set query crashed for %s", customer_id)
+        return set()
+
+    out: set[str] = set()
+    for row in rows:
+        set_type = _enum_name(row.asset_set.type_) if row.asset_set.type_ else ""
+        if set_type != "BRAND_LIST":
+            continue
+        campaign_resource = row.campaign_asset_set.campaign
+        # resource name format: customers/{cid}/campaigns/{id}
+        out.add(campaign_resource.split("/")[-1])
+    logger.info(
+        "Found %d campaigns with BRAND_LIST exclusions in Google account %s",
+        len(out), customer_id,
+    )
+    return out
 
 
 def fetch_asset_group_assets(customer_id: str) -> list[dict]:

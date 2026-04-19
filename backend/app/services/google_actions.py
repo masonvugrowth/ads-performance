@@ -284,12 +284,89 @@ def _manual_only(name: str, guidance: str) -> None:
     )
 
 
-def switch_bid_strategy(customer_id: str, platform_campaign_id: str, **kwargs) -> bool:
-    _manual_only(
-        "switch_bid_strategy",
-        "Open the campaign → Settings → Bidding, and switch to the recommended strategy.",
-    )
-    return False  # unreachable
+def switch_bid_strategy(
+    customer_id: str,
+    platform_campaign_id: str,
+    new_strategy: str | None = None,
+    target_cpa_micros: int | None = None,
+    target_roas: float | None = None,
+    **kwargs,
+) -> bool:
+    """Switch a campaign's bid strategy.
+
+    Supports PMax lifecycle moves:
+    - MAXIMIZE_CONVERSIONS (no tCPA — weeks 1-2)
+    - MAXIMIZE_CONVERSIONS_WITH_TCPA (tCPA hint — weeks 3+)
+    - MAXIMIZE_CONVERSION_VALUE (no tROAS — warm-up)
+    - MAXIMIZE_CONVERSION_VALUE_WITH_TROAS (tROAS — month 4+)
+
+    For Search/Demand Gen, callers should prefer the legacy TargetCpa /
+    TargetRoas portfolio strategies — this function raises ManualActionRequired
+    in that case because portfolio-strategy rebinding is high-risk and best
+    done in the UI with full context.
+    """
+    if new_strategy is None:
+        _manual_only(
+            "switch_bid_strategy",
+            "Open the campaign → Settings → Bidding, and switch to the recommended strategy.",
+        )
+        return False
+
+    customer_id = customer_id.replace("-", "")
+    client = _get_client()
+    try:
+        campaign_service = client.get_service("CampaignService")
+        operation = client.get_type("CampaignOperation")
+        campaign = operation.update
+        campaign.resource_name = campaign_service.campaign_path(
+            customer_id, platform_campaign_id,
+        )
+
+        paths: list[str] = []
+        strategy = new_strategy.upper()
+        if strategy == "MAXIMIZE_CONVERSIONS":
+            # Clear any tCPA hint — must assign the sub-message then blank field.
+            campaign.maximize_conversions.target_cpa_micros = 0
+            paths = ["maximize_conversions.target_cpa_micros"]
+        elif strategy == "MAXIMIZE_CONVERSIONS_WITH_TCPA":
+            if not target_cpa_micros:
+                raise ValueError(
+                    "MAXIMIZE_CONVERSIONS_WITH_TCPA requires target_cpa_micros",
+                )
+            campaign.maximize_conversions.target_cpa_micros = int(target_cpa_micros)
+            paths = ["maximize_conversions.target_cpa_micros"]
+        elif strategy == "MAXIMIZE_CONVERSION_VALUE":
+            campaign.maximize_conversion_value.target_roas = 0
+            paths = ["maximize_conversion_value.target_roas"]
+        elif strategy == "MAXIMIZE_CONVERSION_VALUE_WITH_TROAS":
+            if not target_roas or target_roas <= 0:
+                raise ValueError(
+                    "MAXIMIZE_CONVERSION_VALUE_WITH_TROAS requires target_roas > 0",
+                )
+            campaign.maximize_conversion_value.target_roas = float(target_roas)
+            paths = ["maximize_conversion_value.target_roas"]
+        else:
+            _manual_only(
+                "switch_bid_strategy",
+                f"Strategy {strategy!r} requires manual portfolio binding in Google Ads UI.",
+            )
+            return False
+
+        _set_update_mask(operation, paths)
+        campaign_service.mutate_campaigns(
+            customer_id=customer_id, operations=[operation],
+        )
+        logger.info(
+            "Switched Google campaign %s to bid strategy %s",
+            platform_campaign_id, strategy,
+        )
+        return True
+    except GoogleAdsException as ex:
+        logger.exception(
+            "Google Ads API error switching bid strategy for campaign %s: %s",
+            platform_campaign_id, ex.failure,
+        )
+        raise
 
 
 def add_negative_keywords(customer_id: str, shared_set_id: str, keywords: list[str]) -> bool:

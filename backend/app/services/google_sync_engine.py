@@ -23,6 +23,7 @@ from app.services.google_client import (
     fetch_ads,
     fetch_asset_group_assets,
     fetch_asset_groups,
+    fetch_campaign_brand_exclusions,
     fetch_campaign_metrics,
     fetch_campaigns,
     fetch_conversion_action_metrics,
@@ -123,8 +124,18 @@ def sync_google_account(db: Session, account: AdAccount) -> dict:
         summary["errors"].append(f"Failed to fetch campaigns: {e}")
         return summary
 
+    # Brand-exclusion lookup — merged into raw_data per campaign.
+    try:
+        brand_excluded_ids = fetch_campaign_brand_exclusions(customer_id)
+    except Exception as e:
+        summary["errors"].append(f"Failed to fetch brand exclusions: {e}")
+        brand_excluded_ids = set()
+
     for raw in raw_campaigns:
         parsed = parse_campaign_metadata(raw["name"])
+        # Enrich raw_data with brand-exclusion flag before persisting.
+        raw_data = dict(raw.get("raw_data") or {})
+        raw_data["has_brand_exclusion"] = raw["platform_campaign_id"] in brand_excluded_ids
 
         existing = (
             db.query(Campaign)
@@ -139,7 +150,13 @@ def sync_google_account(db: Session, account: AdAccount) -> dict:
             existing.lifetime_budget = raw["lifetime_budget"]
             existing.ta = parsed["ta"]
             existing.funnel_stage = parsed["funnel_stage"]
-            existing.raw_data = raw["raw_data"]
+            # start_date only overwritten if we got a real value from the API —
+            # never null out an existing start_date.
+            if raw.get("start_date"):
+                existing.start_date = raw["start_date"]
+            if raw.get("end_date"):
+                existing.end_date = raw["end_date"]
+            existing.raw_data = raw_data
             existing.updated_at = datetime.now(timezone.utc)
         else:
             campaign = Campaign(
@@ -155,7 +172,7 @@ def sync_google_account(db: Session, account: AdAccount) -> dict:
                 funnel_stage=parsed["funnel_stage"],
                 start_date=raw.get("start_date"),
                 end_date=raw.get("end_date"),
-                raw_data=raw["raw_data"],
+                raw_data=raw_data,
             )
             db.add(campaign)
         summary["campaigns_synced"] += 1
