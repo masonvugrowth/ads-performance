@@ -1,8 +1,9 @@
 'use client'
 
 import { useEffect, useState, useCallback } from 'react'
-import { TrendingUp, TrendingDown } from 'lucide-react'
+import { TrendingUp, TrendingDown, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react'
 import { apiFetch } from '@/lib/api'
+import { useSortableRows } from '@/lib/useSortableRows'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
@@ -263,62 +264,10 @@ export default function CountryDashboard() {
 
           {/* TA Breakdown Table */}
           {country && taData.length > 0 && (
-            <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-              <div className="px-6 py-4 border-b">
-                <h2 className="text-sm font-semibold text-gray-700">
-                  TA Breakdown — {countries.find(c => c.code === country)?.name || country}
-                </h2>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-gray-100">
-                      <th className="text-left py-3 px-4 text-gray-500 font-medium">TA</th>
-                      <th className="text-left py-3 px-4 text-gray-500 font-medium">Funnel</th>
-                      <th className="text-right py-3 px-4 text-gray-500 font-medium">Spend</th>
-                      <th className="text-right py-3 px-4 text-gray-500 font-medium">Revenue</th>
-                      <th className="text-right py-3 px-4 text-gray-500 font-medium">ROAS</th>
-                      <th className="text-right py-3 px-4 text-gray-500 font-medium">CTR</th>
-                      <th className="text-right py-3 px-4 text-gray-500 font-medium">CPA</th>
-                      <th className="text-right py-3 px-4 text-gray-500 font-medium">Conv</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {taData
-                      .sort((a, b) => b.roas - a.roas)
-                      .map((row, i) => (
-                        <tr key={`${row.ta}-${row.funnel_stage}`}
-                          className={`border-b border-gray-50 ${row.is_remarketing ? 'bg-amber-50' : 'hover:bg-gray-50'}`}>
-                          <td className="py-3 px-4 font-medium text-gray-900">{row.ta}</td>
-                          <td className="py-3 px-4">
-                            <span className={`text-xs px-2 py-0.5 rounded-full ${
-                              row.funnel_stage === 'TOF' ? 'bg-blue-100 text-blue-700' :
-                              row.funnel_stage === 'MOF' ? 'bg-amber-100 text-amber-700' :
-                              row.funnel_stage === 'BOF' ? 'bg-green-100 text-green-700' :
-                              'bg-gray-100 text-gray-700'
-                            }`}>{row.funnel_stage}</span>
-                          </td>
-                          <td className="py-3 px-4 text-right">
-                            <div>{fmt(row.spend)}</div>
-                            <ChangeTag change={row.spend_change} inverseColor />
-                          </td>
-                          <td className="py-3 px-4 text-right">{fmt(row.revenue)}</td>
-                          <td className="py-3 px-4 text-right">
-                            <div className={`font-medium ${row.roas >= 1 ? 'text-green-600' : 'text-red-600'}`}>{row.roas.toFixed(2)}x</div>
-                            <ChangeTag change={row.roas_change} />
-                          </td>
-                          <td className="py-3 px-4 text-right">{row.ctr.toFixed(1)}%</td>
-                          <td className="py-3 px-4 text-right">{fmt(Math.round(row.cpa))}</td>
-                          <td className="py-3 px-4 text-right">
-                            <div>{row.conversions}</div>
-                            <ChangeTag change={row.conversions_change} />
-                          </td>
-                        </tr>
-                      ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
+            <TaBreakdownTable
+              rows={taData}
+              title={`TA Breakdown — ${countries.find(c => c.code === country)?.name || country}`}
+            />
           )}
 
           {/* Conversion Funnel */}
@@ -357,53 +306,7 @@ export default function CountryDashboard() {
           )}
 
           {/* Country Comparison Table */}
-          {comparison.length > 0 && (
-            <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-              <div className="px-6 py-4 border-b">
-                <h2 className="text-sm font-semibold text-gray-700">Country Comparison</h2>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-gray-100">
-                      <th className="text-left py-3 px-4 text-gray-500 font-medium">Country</th>
-                      <th className="text-right py-3 px-4 text-gray-500 font-medium">Spend</th>
-                      <th className="text-right py-3 px-4 text-gray-500 font-medium">Revenue</th>
-                      <th className="text-right py-3 px-4 text-gray-500 font-medium">ROAS</th>
-                      <th className="text-right py-3 px-4 text-gray-500 font-medium">CTR</th>
-                      <th className="text-right py-3 px-4 text-gray-500 font-medium">CPA</th>
-                      <th className="text-right py-3 px-4 text-gray-500 font-medium">Conversions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {comparison.map((row) => (
-                      <tr key={row.country_code} className="border-b border-gray-50 hover:bg-gray-50">
-                        <td className="py-3 px-4">
-                          <span className="font-medium text-gray-900">{row.country}</span>
-                          <span className="text-xs text-gray-400 ml-1">({row.country_code})</span>
-                        </td>
-                        <td className="py-3 px-4 text-right">
-                          <div>{fmt(row.total_spend)}</div>
-                          <ChangeTag change={row.spend_change} inverseColor />
-                        </td>
-                        <td className="py-3 px-4 text-right">{fmt(row.total_revenue)}</td>
-                        <td className="py-3 px-4 text-right">
-                          <div className={`font-medium ${row.roas >= 1 ? 'text-green-600' : 'text-red-600'}`}>{row.roas.toFixed(2)}x</div>
-                          <ChangeTag change={row.roas_change} />
-                        </td>
-                        <td className="py-3 px-4 text-right">{row.ctr.toFixed(1)}%</td>
-                        <td className="py-3 px-4 text-right">{fmt(Math.round(row.cpa))}</td>
-                        <td className="py-3 px-4 text-right">
-                          <div>{row.conversions}</div>
-                          <ChangeTag change={row.conversions_change} />
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
+          {comparison.length > 0 && <CountryComparisonTable rows={comparison} />}
 
           {!loading && kpiData.length === 0 && (
             <div className="text-center py-12 text-gray-400">
@@ -412,6 +315,141 @@ export default function CountryDashboard() {
           )}
         </div>
       )}
+    </div>
+  )
+}
+
+function SortableTh<T extends Record<string, any>>({
+  col, label, align = 'right', sortBy, sortDir, onToggle,
+}: {
+  col: keyof T
+  label: string
+  align?: 'left' | 'right'
+  sortBy: keyof T | null
+  sortDir: 'asc' | 'desc'
+  onToggle: (c: keyof T) => void
+}) {
+  const active = sortBy === col
+  return (
+    <th
+      className={`${align === 'right' ? 'text-right' : 'text-left'} py-3 px-4 text-gray-500 font-medium cursor-pointer select-none hover:text-gray-700`}
+      onClick={() => onToggle(col)}
+    >
+      <span className={`inline-flex items-center gap-1 ${align === 'right' ? 'justify-end w-full' : ''}`}>
+        {label}
+        {active
+          ? (sortDir === 'asc' ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />)
+          : <ArrowUpDown className="w-3 h-3 opacity-40" />}
+      </span>
+    </th>
+  )
+}
+
+function TaBreakdownTable({ rows, title }: { rows: TaRow[]; title: string }) {
+  const { sorted, sortBy, sortDir, toggleSort } = useSortableRows<TaRow>(rows, 'roas', 'desc')
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+      <div className="px-6 py-4 border-b">
+        <h2 className="text-sm font-semibold text-gray-700">{title}</h2>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-gray-100">
+              <SortableTh<TaRow> col="ta" label="TA" align="left" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
+              <SortableTh<TaRow> col="funnel_stage" label="Funnel" align="left" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
+              <SortableTh<TaRow> col="spend" label="Spend" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
+              <SortableTh<TaRow> col="revenue" label="Revenue" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
+              <SortableTh<TaRow> col="roas" label="ROAS" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
+              <SortableTh<TaRow> col="ctr" label="CTR" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
+              <SortableTh<TaRow> col="cpa" label="CPA" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
+              <SortableTh<TaRow> col="conversions" label="Conv" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map((row) => (
+              <tr key={`${row.ta}-${row.funnel_stage}`}
+                className={`border-b border-gray-50 ${row.is_remarketing ? 'bg-amber-50' : 'hover:bg-gray-50'}`}>
+                <td className="py-3 px-4 font-medium text-gray-900">{row.ta}</td>
+                <td className="py-3 px-4">
+                  <span className={`text-xs px-2 py-0.5 rounded-full ${
+                    row.funnel_stage === 'TOF' ? 'bg-blue-100 text-blue-700' :
+                    row.funnel_stage === 'MOF' ? 'bg-amber-100 text-amber-700' :
+                    row.funnel_stage === 'BOF' ? 'bg-green-100 text-green-700' :
+                    'bg-gray-100 text-gray-700'
+                  }`}>{row.funnel_stage}</span>
+                </td>
+                <td className="py-3 px-4 text-right">
+                  <div>{fmt(row.spend)}</div>
+                  <ChangeTag change={row.spend_change} inverseColor />
+                </td>
+                <td className="py-3 px-4 text-right">{fmt(row.revenue)}</td>
+                <td className="py-3 px-4 text-right">
+                  <div className={`font-medium ${row.roas >= 1 ? 'text-green-600' : 'text-red-600'}`}>{row.roas.toFixed(2)}x</div>
+                  <ChangeTag change={row.roas_change} />
+                </td>
+                <td className="py-3 px-4 text-right">{row.ctr.toFixed(1)}%</td>
+                <td className="py-3 px-4 text-right">{fmt(Math.round(row.cpa))}</td>
+                <td className="py-3 px-4 text-right">
+                  <div>{row.conversions}</div>
+                  <ChangeTag change={row.conversions_change} />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+function CountryComparisonTable({ rows }: { rows: CountryKpi[] }) {
+  const { sorted, sortBy, sortDir, toggleSort } = useSortableRows<CountryKpi>(rows)
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+      <div className="px-6 py-4 border-b">
+        <h2 className="text-sm font-semibold text-gray-700">Country Comparison</h2>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-gray-100">
+              <SortableTh<CountryKpi> col="country" label="Country" align="left" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
+              <SortableTh<CountryKpi> col="total_spend" label="Spend" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
+              <SortableTh<CountryKpi> col="total_revenue" label="Revenue" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
+              <SortableTh<CountryKpi> col="roas" label="ROAS" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
+              <SortableTh<CountryKpi> col="ctr" label="CTR" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
+              <SortableTh<CountryKpi> col="cpa" label="CPA" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
+              <SortableTh<CountryKpi> col="conversions" label="Conversions" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map((row) => (
+              <tr key={row.country_code} className="border-b border-gray-50 hover:bg-gray-50">
+                <td className="py-3 px-4">
+                  <span className="font-medium text-gray-900">{row.country}</span>
+                  <span className="text-xs text-gray-400 ml-1">({row.country_code})</span>
+                </td>
+                <td className="py-3 px-4 text-right">
+                  <div>{fmt(row.total_spend)}</div>
+                  <ChangeTag change={row.spend_change} inverseColor />
+                </td>
+                <td className="py-3 px-4 text-right">{fmt(row.total_revenue)}</td>
+                <td className="py-3 px-4 text-right">
+                  <div className={`font-medium ${row.roas >= 1 ? 'text-green-600' : 'text-red-600'}`}>{row.roas.toFixed(2)}x</div>
+                  <ChangeTag change={row.roas_change} />
+                </td>
+                <td className="py-3 px-4 text-right">{row.ctr.toFixed(1)}%</td>
+                <td className="py-3 px-4 text-right">{fmt(Math.round(row.cpa))}</td>
+                <td className="py-3 px-4 text-right">
+                  <div>{row.conversions}</div>
+                  <ChangeTag change={row.conversions_change} />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }

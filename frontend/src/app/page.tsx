@@ -5,7 +5,8 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, Legend,
 } from 'recharts'
-import { TrendingUp, TrendingDown, ChevronRight } from 'lucide-react'
+import { TrendingUp, TrendingDown, ChevronRight, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react'
+import { useSortableRows } from '@/lib/useSortableRows'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
@@ -447,24 +448,47 @@ export default function DashboardPage() {
       </div>
 
       {/* Performance by Branch */}
-      <div className="bg-white rounded-xl border border-gray-200 p-6">
-        <h2 className="text-sm font-semibold text-gray-700 mb-4">Performance by Branch</h2>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-gray-100">
-                <th className="text-left py-3 px-2 text-gray-500 font-medium">Platform</th>
-                <th className="text-left py-3 px-2 text-gray-500 font-medium">Branch</th>
-                <th className="text-right py-3 px-2 text-gray-500 font-medium">Spend</th>
-                <th className="text-right py-3 px-2 text-gray-500 font-medium">Revenue</th>
-                <th className="text-right py-3 px-2 text-gray-500 font-medium">ROAS</th>
-                <th className="text-right py-3 px-2 text-gray-500 font-medium">Clicks</th>
-                <th className="text-right py-3 px-2 text-gray-500 font-medium">CTR</th>
-                <th className="text-right py-3 px-2 text-gray-500 font-medium">Conversions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {byAccount.map((row) => {
+      <PerformanceByBranchTable rows={byAccount} />
+    </div>
+  )
+}
+
+function PerformanceByBranchTable({ rows }: { rows: AccountRow[] }) {
+  const { sorted, sortBy, sortDir, toggleSort } = useSortableRows<AccountRow>(rows)
+
+  const SortHeader = ({ col, label, align = 'right' }: { col: keyof AccountRow; label: string; align?: 'left' | 'right' }) => {
+    const active = sortBy === col
+    return (
+      <th className={`${align === 'right' ? 'text-right' : 'text-left'} py-3 px-2 text-gray-500 font-medium cursor-pointer select-none hover:text-gray-700`} onClick={() => toggleSort(col)}>
+        <span className={`inline-flex items-center gap-1 ${align === 'right' ? 'justify-end w-full' : ''}`}>
+          {label}
+          {active
+            ? (sortDir === 'asc' ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />)
+            : <ArrowUpDown className="w-3 h-3 opacity-40" />}
+        </span>
+      </th>
+    )
+  }
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 p-6">
+      <h2 className="text-sm font-semibold text-gray-700 mb-4">Performance by Branch</h2>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-gray-100">
+              <SortHeader col="platform" label="Platform" align="left" />
+              <SortHeader col="account_name" label="Branch" align="left" />
+              <SortHeader col="spend" label="Spend" />
+              <SortHeader col="revenue" label="Revenue" />
+              <SortHeader col="roas" label="ROAS" />
+              <SortHeader col="clicks" label="Clicks" />
+              <SortHeader col="ctr" label="CTR" />
+              <SortHeader col="conversions" label="Conversions" />
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map((row) => {
                 const platformColors: Record<string, string> = {
                   meta: 'bg-blue-50 text-blue-700',
                   google: 'bg-green-50 text-green-700',
@@ -493,14 +517,13 @@ export default function DashboardPage() {
                   <td className="py-3 px-2 text-right text-gray-700">{(row.ctr * 100).toFixed(2)}%</td>
                   <td className="py-3 px-2 text-right text-gray-700">{row.conversions}</td>
                 </tr>
-                )
-              })}
-              {byAccount.length === 0 && (
-                <tr><td colSpan={8} className="py-8 text-center text-gray-400">No metrics data yet.</td></tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+              )
+            })}
+            {rows.length === 0 && (
+              <tr><td colSpan={8} className="py-8 text-center text-gray-400">No metrics data yet.</td></tr>
+            )}
+          </tbody>
+        </table>
       </div>
     </div>
   )

@@ -20,19 +20,18 @@ from app.models.ad_material import AdMaterial
 from app.services.creative_service import (
     next_combo_id, next_copy_id, next_material_id,
 )
+from app.services.parse_utils import parse_campaign_metadata
 
 logger = logging.getLogger(__name__)
 
 
 def _detect_ta(name: str) -> str:
-    n = (name or "").lower()
-    if "couple" in n or "romantic" in n:
-        return "Couple"
-    if "friend" in n or "group" in n:
-        return "Group"
-    if "family" in n:
-        return "Family"
-    return "Solo"
+    """Extract TA using the canonical whitelist (parse_utils.TA_WHITELIST).
+
+    Returns 'Unknown' when no whitelist token is present, matching the
+    platform-wide parsing contract (see .claude/rules/parsing-rules.md).
+    """
+    return parse_campaign_metadata(name)["ta"]
 
 
 def _detect_material_type(ad_name: str) -> str:

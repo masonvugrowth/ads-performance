@@ -19,6 +19,7 @@ from app.services.creative_service import (
     auto_classify_all_combos, classify_verdict, next_angle_id, next_combo_id,
     next_copy_id, next_material_id, propagate_derived_verdicts,
 )
+from app.services.parse_utils import parse_campaign_metadata
 
 router = APIRouter()
 
@@ -197,10 +198,10 @@ def list_angles(
     try:
         # Angles are global (branch_id = NULL for all). Branch filter scopes
         # the combo metrics below, not the angle list itself.
-        q = db.query(AdAngle)
-        if status:
-            q = q.filter(AdAngle.status == status)
-        rows = q.order_by(AdAngle.angle_id).all()
+        # Status filter is applied AFTER computing branch_verdict (see bottom):
+        # with a branch, we filter by the computed verdict shown in the UI
+        # (not the static AdAngle.status column, which stays "TEST" by default).
+        rows = db.query(AdAngle).order_by(AdAngle.angle_id).all()
 
         # Aggregate combo metrics per angle — scoped to branch if provided
         combo_q = db.query(AdCombo).filter(AdCombo.angle_id.isnot(None))
@@ -257,6 +258,14 @@ def list_angles(
                     branch_verdict = "WIN"
                 else:
                     branch_verdict = "LOSE"
+
+            # Status filter: when branch_id is set, filter on the computed
+            # branch_verdict (what the UI badge shows); otherwise fall back to
+            # the static AdAngle.status column.
+            if status:
+                effective = branch_verdict if branch_id else r.status
+                if effective != status:
+                    continue
 
             result.append({
                 "id": r.id, "angle_id": r.angle_id, "branch_id": r.branch_id,
@@ -966,4 +975,64 @@ def analytics_by_angle(
         result.sort(key=lambda x: x["roas"], reverse=True)
         return _api_response(data=result)
     except Exception as e:
+        return _api_response(error=str(e))
+
+
+# ── Admin / Backfill ──────────────────────────────────────
+
+
+@router.post("/creative/reparse-ta")
+def reparse_target_audience(
+    current_user: User = Depends(require_section("meta_ads", "edit")),
+    db: Session = Depends(get_db),
+):
+    """Re-parse target_audience on existing combos, copies, and materials using
+    the canonical TA_WHITELIST. One-shot cleanup after the parser fix — earlier
+    sync runs stored invalid values like 'Family' or mis-categorised 'Friend'
+    ads as 'Group'.
+
+    Combos are authoritative (ad_name preserved). Copies and materials get TA
+    propagated from the combo that references them; orphans fall back to
+    re-parsing their own headline/description. Rows that still parse to
+    'Unknown' are left untouched to avoid clobbering manual edits.
+    """
+    try:
+        updated = {"combos": 0, "copies": 0, "materials": 0}
+
+        combos = db.query(AdCombo).all()
+        copy_ta: dict[str, str] = {}
+        material_ta: dict[str, str] = {}
+
+        for combo in combos:
+            new_ta = parse_campaign_metadata(combo.ad_name or "")["ta"]
+            if new_ta == "Unknown":
+                continue
+            if combo.target_audience != new_ta:
+                combo.target_audience = new_ta
+                updated["combos"] += 1
+            if combo.copy_id:
+                copy_ta[combo.copy_id] = new_ta
+            if combo.material_id:
+                material_ta[combo.material_id] = new_ta
+
+        for m in db.query(AdMaterial).all():
+            new_ta = material_ta.get(m.material_id) or parse_campaign_metadata(m.description or "")["ta"]
+            if new_ta == "Unknown":
+                continue
+            if m.target_audience != new_ta:
+                m.target_audience = new_ta
+                updated["materials"] += 1
+
+        for c in db.query(AdCopy).all():
+            new_ta = copy_ta.get(c.copy_id) or parse_campaign_metadata(c.headline or "")["ta"]
+            if new_ta == "Unknown":
+                continue
+            if c.target_audience != new_ta:
+                c.target_audience = new_ta
+                updated["copies"] += 1
+
+        db.commit()
+        return _api_response(data=updated)
+    except Exception as e:
+        db.rollback()
         return _api_response(error=str(e))

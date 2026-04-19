@@ -26,7 +26,7 @@ interface Angle { angle_id: string; branch_id: string | null; angle_type: string
 const VERDICT_COLORS: Record<string, string> = {
   WIN: 'bg-green-100 text-green-700', TEST: 'bg-yellow-100 text-yellow-700', LOSE: 'bg-red-100 text-red-700',
 }
-const TA_LIST = ['Solo', 'Couple', 'Group', 'Family']
+const TA_LIST = ['Solo', 'Couple', 'Friend', 'Group', 'Business']
 
 export default function CreativePage() {
   const router = useRouter()
@@ -93,6 +93,24 @@ export default function CreativePage() {
     fetch(`${API_BASE}/api/combos/${comboId}/verdict`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ verdict }) })
   }
 
+  const reparseTA = () => {
+    if (!confirm('Re-parse TA on all combos, copies, and materials using the canonical whitelist (Solo, Couple, Friend, Group, Business)?')) return
+    setClassifyMsg('Re-parsing TA...')
+    fetch(`${API_BASE}/api/creative/reparse-ta`, { method: 'POST', credentials: 'include' })
+      .then(r => r.json())
+      .then(d => {
+        if (d.success) {
+          const u = d.data
+          setClassifyMsg(`Re-parsed TA: ${u.combos} combos, ${u.copies} copies, ${u.materials} materials updated.`)
+          setSortBy(s => s) // trigger combos refetch
+          setFBranch(b => b) // trigger copies/materials refetch
+        } else {
+          setClassifyMsg(`Error: ${d.error}`)
+        }
+      })
+      .catch(() => setClassifyMsg('Re-parse failed'))
+  }
+
   const updateCombo = (comboId: string, data: { angle_id?: string; keypoint_ids?: string[] }) => {
     fetch(`${API_BASE}/api/combos/${comboId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify(data) })
       .then(() => { setEditingId(null); setSortBy(s => s) /* trigger refetch */ })
@@ -129,12 +147,22 @@ export default function CreativePage() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold text-gray-900">Creative Library</h1>
-        <button
-          onClick={() => router.push('/creative/submit')}
-          className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 flex items-center gap-1.5"
-        >
-          <Plus className="w-4 h-4" /> New Combo
-        </button>
+        <div className="flex items-center gap-2">
+          {classifyMsg && <span className="text-xs text-gray-500">{classifyMsg}</span>}
+          <button
+            onClick={reparseTA}
+            className="bg-gray-100 text-gray-700 px-3 py-2 rounded-lg text-xs font-medium hover:bg-gray-200"
+            title="Re-parse TA on all rows using Solo/Couple/Friend/Group/Business whitelist"
+          >
+            Re-parse TA
+          </button>
+          <button
+            onClick={() => router.push('/creative/submit')}
+            className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 flex items-center gap-1.5"
+          >
+            <Plus className="w-4 h-4" /> New Combo
+          </button>
+        </div>
       </div>
 
       {/* Tabs */}

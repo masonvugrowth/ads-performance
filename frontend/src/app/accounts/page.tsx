@@ -89,7 +89,7 @@ export default function AccountsPage() {
     try {
       let url = ''
       if (accountPlatform === 'meta') {
-        url = `${API_BASE}/api/sync/manual`
+        url = `${API_BASE}/api/sync/trigger?platform=meta`
       } else if (accountPlatform === 'google') {
         url = `${API_BASE}/api/google/sync?account_id=${accountId}`
       }
@@ -102,7 +102,7 @@ export default function AccountsPage() {
       const resp = await fetch(url, { method: 'POST', credentials: 'include' })
       const data = await resp.json()
       if (data.success) {
-        setSyncResult('Sync completed successfully!')
+        setSyncResult(data.data?.message || 'Sync started — check back in ~1 min')
       } else {
         setSyncResult(`Sync error: ${data.error}`)
       }
