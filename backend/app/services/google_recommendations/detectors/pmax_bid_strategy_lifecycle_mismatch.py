@@ -90,7 +90,14 @@ class PmaxBidStrategyLifecycleMismatchDetector(Detector):
         for camp in q.all():
             if classify_campaign(camp) != "PMAX":
                 continue
-            if not camp.start_date:
+            # Prefer campaign.start_date when populated; otherwise fall back to
+            # Campaign.created_at (first sync time). The fallback underestimates
+            # age for campaigns older than the first sync — acceptable because
+            # the detector is WARN-level and the operator can override.
+            effective_start = camp.start_date
+            if effective_start is None and camp.created_at is not None:
+                effective_start = camp.created_at.date()
+            if effective_start is None:
                 continue
             yield DetectorTarget(
                 entity_level="campaign",
@@ -100,7 +107,8 @@ class PmaxBidStrategyLifecycleMismatchDetector(Detector):
                 campaign_type="PMAX",
                 context={
                     "campaign_name": camp.name,
-                    "start_date": camp.start_date.isoformat(),
+                    "start_date": effective_start.isoformat(),
+                    "start_date_is_fallback": camp.start_date is None,
                     "raw_data": camp.raw_data or {},
                 },
             )

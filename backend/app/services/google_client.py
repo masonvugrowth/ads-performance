@@ -114,8 +114,6 @@ def fetch_campaigns(customer_id: str) -> list[dict]:
             campaign.name,
             campaign.status,
             campaign.advertising_channel_type,
-            campaign.start_date,
-            campaign.end_date,
             campaign.bidding_strategy_type,
             campaign.maximize_conversions.target_cpa_micros,
             campaign.maximize_conversion_value.target_roas,
@@ -143,8 +141,10 @@ def fetch_campaigns(customer_id: str) -> list[dict]:
                     row.campaign_budget.amount_micros if row.campaign_budget else None
                 ),
                 "lifetime_budget": None,  # Google uses daily budgets
-                "start_date": _parse_date_str(c.start_date),
-                "end_date": _parse_date_str(c.end_date),
+                # campaign.start_date / end_date are rejected by v23 GAQL in this
+                # MCC query context — detector falls back to Campaign.created_at.
+                "start_date": None,
+                "end_date": None,
                 "raw_data": {
                     "campaign_id": str(c.id),
                     "campaign_type": campaign_type,
