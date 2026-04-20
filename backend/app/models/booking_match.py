@@ -24,6 +24,7 @@ class BookingMatch(TimestampMixin, Base):
     guest_emails = Column(String(1000), nullable=True)
     reservation_statuses = Column(String(500), nullable=True)
     room_types = Column(String(1000), nullable=True)
+    rate_plans = Column(String(1000), nullable=True)
     reservation_sources = Column(String(500), nullable=True)
     matched_country = Column(String(200), nullable=True)
     branch = Column(String(100), nullable=True, index=True)

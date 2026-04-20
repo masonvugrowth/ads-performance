@@ -17,6 +17,7 @@ type BookingMatch = {
   guest_emails: string | null
   reservation_statuses: string | null
   room_types: string | null
+  rate_plans: string | null
   reservation_sources: string | null
   matched_country: string | null
   branch: string | null
@@ -51,9 +52,15 @@ function getDateRange(preset: string): { from: string; to: string } {
     return dt.toISOString().split('T')[0]
   }
   switch (preset) {
+    case 'today': return { from: to, to }
+    case 'yesterday': {
+      const y = daysBack(1)
+      return { from: y, to: y }
+    }
     case '7d': return { from: daysBack(6), to }
     case '14d': return { from: daysBack(13), to }
     case '30d': return { from: daysBack(29), to }
+    case '90d': return { from: daysBack(89), to }
     case 'this_month': {
       const from = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().split('T')[0]
       return { from, to }
@@ -61,6 +68,15 @@ function getDateRange(preset: string): { from: string; to: string } {
     case 'last_month': {
       const from = new Date(today.getFullYear(), today.getMonth() - 1, 1).toISOString().split('T')[0]
       const last = new Date(today.getFullYear(), today.getMonth(), 0).toISOString().split('T')[0]
+      return { from, to: last }
+    }
+    case 'this_year': {
+      const from = new Date(today.getFullYear(), 0, 1).toISOString().split('T')[0]
+      return { from, to }
+    }
+    case 'last_year': {
+      const from = new Date(today.getFullYear() - 1, 0, 1).toISOString().split('T')[0]
+      const last = new Date(today.getFullYear() - 1, 11, 31).toISOString().split('T')[0]
       return { from, to: last }
     }
     default: return { from: daysBack(29), to }
@@ -90,9 +106,18 @@ function ResultBadge({ result }: { result: string }) {
 
 export default function BookingMatchesDashboard() {
   const [datePreset, setDatePreset] = useState('30d')
+  const [customFrom, setCustomFrom] = useState('')
+  const [customTo, setCustomTo] = useState('')
   const [branch, setBranch] = useState('')
   const [channel, setChannel] = useState('')
   const [matchResult, setMatchResult] = useState('')
+
+  const resolveRange = useCallback(() => {
+    if (datePreset === 'custom' && customFrom && customTo) {
+      return { from: customFrom, to: customTo }
+    }
+    return getDateRange(datePreset)
+  }, [datePreset, customFrom, customTo])
   const [summary, setSummary] = useState<Summary | null>(null)
   const [matches, setMatches] = useState<BookingMatch[]>([])
   const [loading, setLoading] = useState(false)
@@ -102,7 +127,8 @@ export default function BookingMatchesDashboard() {
   const fetchData = useCallback(async () => {
     setLoading(true)
     try {
-      const { from, to } = getDateRange(datePreset)
+      const { from, to } = resolveRange()
+      if (!from || !to) { setLoading(false); return }
       const params = new URLSearchParams({ date_from: from, date_to: to })
       if (branch) params.set('branch', branch)
       if (channel) params.set('channel', channel)
@@ -121,7 +147,7 @@ export default function BookingMatchesDashboard() {
     } finally {
       setLoading(false)
     }
-  }, [datePreset, branch, channel, matchResult])
+  }, [resolveRange, branch, channel, matchResult])
 
   useEffect(() => { fetchData() }, [fetchData])
 
@@ -129,7 +155,12 @@ export default function BookingMatchesDashboard() {
     setRunning(true)
     setRunMessage(null)
     try {
-      const { from, to } = getDateRange(datePreset)
+      const { from, to } = resolveRange()
+      if (!from || !to) {
+        setRunMessage('Pick a custom date range first.')
+        setRunning(false)
+        return
+      }
       const res = await fetch(
         `${API_BASE}/api/booking-matches/run?date_from=${from}&date_to=${to}`,
         { method: 'POST', credentials: 'include' }
@@ -183,12 +214,36 @@ export default function BookingMatchesDashboard() {
           onChange={(e) => setDatePreset(e.target.value)}
           className="px-3 py-2 border border-gray-300 rounded-lg text-sm"
         >
+          <option value="today">Today</option>
+          <option value="yesterday">Yesterday</option>
           <option value="7d">Last 7 days</option>
           <option value="14d">Last 14 days</option>
           <option value="30d">Last 30 days</option>
+          <option value="90d">Last 90 days</option>
           <option value="this_month">This month</option>
           <option value="last_month">Last month</option>
+          <option value="this_year">This year</option>
+          <option value="last_year">Last year</option>
+          <option value="custom">Custom range</option>
         </select>
+
+        {datePreset === 'custom' && (
+          <>
+            <input
+              type="date"
+              value={customFrom}
+              onChange={(e) => setCustomFrom(e.target.value)}
+              className="px-2 py-2 border border-gray-300 rounded-lg text-sm"
+            />
+            <span className="text-gray-400">→</span>
+            <input
+              type="date"
+              value={customTo}
+              onChange={(e) => setCustomTo(e.target.value)}
+              className="px-2 py-2 border border-gray-300 rounded-lg text-sm"
+            />
+          </>
+        )}
 
         <select
           value={branch}
@@ -312,6 +367,7 @@ export default function BookingMatchesDashboard() {
                 <th className="text-left px-3 py-2">Guest</th>
                 <th className="text-left px-3 py-2">Status</th>
                 <th className="text-left px-3 py-2">Room</th>
+                <th className="text-left px-3 py-2">Rate Plan</th>
                 <th className="text-left px-3 py-2">Source</th>
                 <th className="text-left px-3 py-2">Country</th>
                 <th className="text-left px-3 py-2">Result</th>
@@ -319,10 +375,10 @@ export default function BookingMatchesDashboard() {
             </thead>
             <tbody>
               {loading && (
-                <tr><td colSpan={13} className="text-center py-8 text-gray-400">Loading...</td></tr>
+                <tr><td colSpan={14} className="text-center py-8 text-gray-400">Loading...</td></tr>
               )}
               {!loading && matches.length === 0 && (
-                <tr><td colSpan={13} className="text-center py-8 text-gray-400">No matches found</td></tr>
+                <tr><td colSpan={14} className="text-center py-8 text-gray-400">No matches found</td></tr>
               )}
               {matches.map(m => (
                 <tr key={m.id} className={`border-t border-gray-100 ${rowBgColor(m.match_result)}`}>
@@ -336,6 +392,7 @@ export default function BookingMatchesDashboard() {
                   <td className="px-3 py-2 max-w-[160px] truncate" title={m.guest_names || ''}>{m.guest_names}</td>
                   <td className="px-3 py-2">{m.reservation_statuses}</td>
                   <td className="px-3 py-2 max-w-[140px] truncate" title={m.room_types || ''}>{m.room_types}</td>
+                  <td className="px-3 py-2 max-w-[160px] truncate" title={m.rate_plans || ''}>{m.rate_plans}</td>
                   <td className="px-3 py-2">{m.reservation_sources}</td>
                   <td className="px-3 py-2 max-w-[120px] truncate" title={m.matched_country || ''}>{m.matched_country}</td>
                   <td className="px-3 py-2"><ResultBadge result={m.match_result} /></td>

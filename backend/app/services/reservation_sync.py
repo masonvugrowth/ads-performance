@@ -49,6 +49,32 @@ def _parse_int(val) -> int | None:
         return None
 
 
+# PMS feeds differ per property — try the common key variants.
+RATE_PLAN_KEYS = (
+    "rate_plan_name",
+    "rate_plan",
+    "ratePlan",
+    "ratePlanName",
+    "rate_plan_code",
+    "room_rate_plan",
+)
+
+
+def _extract_rate_plan(raw: dict) -> str | None:
+    for key in RATE_PLAN_KEYS:
+        val = raw.get(key)
+        if val:
+            return str(val).strip() or None
+    # Some PMS feeds nest rate plan inside room_type_detail / reservation_lines
+    detail = raw.get("room_type_detail") or raw.get("room_detail")
+    if isinstance(detail, dict):
+        for key in RATE_PLAN_KEYS:
+            val = detail.get(key)
+            if val:
+                return str(val).strip() or None
+    return None
+
+
 def sync_reservations(
     db: Session,
     date_from: date,
@@ -95,6 +121,7 @@ def sync_reservations(
                 "status": raw.get("status") or None,
                 "source": raw.get("source") or None,
                 "room_type": raw.get("room_type") or None,
+                "rate_plan_name": _extract_rate_plan(raw),
                 "branch": branch,
                 "nights": _parse_int(raw.get("nights")),
                 "adults": _parse_int(raw.get("adults")),

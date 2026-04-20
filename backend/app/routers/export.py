@@ -1,7 +1,7 @@
 """Export API endpoints with API key authentication."""
 
 import calendar
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.api_key import ApiKey
+from app.models.booking_match import BookingMatch
 from app.models.budget import BudgetPlan
 from app.models.metrics import MetricsCache
 from app.services.export_auth import create_api_key, validate_api_key
@@ -162,5 +163,159 @@ def export_spend_daily(
             }
             for row in rows
         ])
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
+def _resolve_booking_date_range(date_from: str | None, date_to: str | None) -> tuple[date, date]:
+    if date_to:
+        dt = date.fromisoformat(date_to)
+    else:
+        dt = date.today()
+    if date_from:
+        df = date.fromisoformat(date_from)
+    else:
+        df = dt - timedelta(days=29)
+    if df > dt:
+        raise ValueError("date_from must be <= date_to")
+    return df, dt
+
+
+@router.get("/export/booking-matches")
+def export_booking_matches(
+    date_from: str = Query(None, description="ISO date YYYY-MM-DD; defaults to 30 days before date_to"),
+    date_to: str = Query(None, description="ISO date YYYY-MM-DD; defaults to today"),
+    branch: str = Query(None, description="Canonical branch key: Saigon|Taipei|1948|Osaka|Oani"),
+    channel: str = Query(None, description="Ads channel: meta|google"),
+    match_result: str = Query(None),
+    limit: int = Query(500, le=2000),
+    offset: int = Query(0, ge=0),
+    api_key: ApiKey = Depends(validate_api_key),
+    db: Session = Depends(get_db),
+):
+    """Export Booking from Ads rows for external systems. Requires X-API-Key.
+
+    Returns the same shape as the internal /api/booking-matches endpoint plus
+    rate_plans, so downstream BI tools can break down matched revenue by rate plan.
+    """
+    try:
+        df, dt = _resolve_booking_date_range(date_from, date_to)
+
+        q = db.query(BookingMatch).filter(
+            BookingMatch.match_date >= df,
+            BookingMatch.match_date <= dt,
+        )
+        if branch:
+            q = q.filter(BookingMatch.branch == branch)
+        if channel:
+            q = q.filter(BookingMatch.ads_channel == channel)
+        if match_result:
+            q = q.filter(BookingMatch.match_result == match_result)
+
+        total = q.count()
+        rows = (
+            q.order_by(BookingMatch.match_date.desc())
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+
+        items = [
+            {
+                "id": str(m.id),
+                "match_date": m.match_date.isoformat() if m.match_date else None,
+                "ads_revenue": float(m.ads_revenue or 0),
+                "ads_bookings": m.ads_bookings,
+                "ads_country": m.ads_country,
+                "ads_channel": m.ads_channel,
+                "campaign_name": m.campaign_name,
+                "campaign_id": str(m.campaign_id) if m.campaign_id else None,
+                "reservation_numbers": m.reservation_numbers,
+                "guest_names": m.guest_names,
+                "guest_emails": m.guest_emails,
+                "reservation_statuses": m.reservation_statuses,
+                "room_types": m.room_types,
+                "rate_plans": m.rate_plans,
+                "reservation_sources": m.reservation_sources,
+                "matched_country": m.matched_country,
+                "branch": m.branch,
+                "match_result": m.match_result,
+                "matched_at": m.matched_at.isoformat() if m.matched_at else None,
+            }
+            for m in rows
+        ]
+
+        return _api_response(data={
+            "items": items,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "period": {"from": df.isoformat(), "to": dt.isoformat()},
+        })
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
+@router.get("/export/booking-matches/summary")
+def export_booking_matches_summary(
+    date_from: str = Query(None),
+    date_to: str = Query(None),
+    branch: str = Query(None),
+    api_key: ApiKey = Depends(validate_api_key),
+    db: Session = Depends(get_db),
+):
+    """KPI roll-up for Booking from Ads. Requires X-API-Key."""
+    try:
+        df, dt = _resolve_booking_date_range(date_from, date_to)
+
+        base = db.query(BookingMatch).filter(
+            BookingMatch.match_date >= df,
+            BookingMatch.match_date <= dt,
+        )
+        if branch:
+            base = base.filter(BookingMatch.branch == branch)
+
+        total_matches = base.count()
+        total_revenue = float(base.with_entities(func.sum(BookingMatch.ads_revenue)).scalar() or 0)
+        total_bookings = int(base.with_entities(func.sum(BookingMatch.ads_bookings)).scalar() or 0)
+
+        by_channel = [
+            {
+                "channel": r.ads_channel or "unknown",
+                "matches": int(r.matches or 0),
+                "revenue": float(r.revenue or 0),
+                "bookings": int(r.bookings or 0),
+            }
+            for r in base.with_entities(
+                BookingMatch.ads_channel,
+                func.count(BookingMatch.id).label("matches"),
+                func.sum(BookingMatch.ads_revenue).label("revenue"),
+                func.sum(BookingMatch.ads_bookings).label("bookings"),
+            ).group_by(BookingMatch.ads_channel).all()
+        ]
+
+        by_branch = [
+            {
+                "branch": r.branch or "unknown",
+                "matches": int(r.matches or 0),
+                "revenue": float(r.revenue or 0),
+                "bookings": int(r.bookings or 0),
+            }
+            for r in base.with_entities(
+                BookingMatch.branch,
+                func.count(BookingMatch.id).label("matches"),
+                func.sum(BookingMatch.ads_revenue).label("revenue"),
+                func.sum(BookingMatch.ads_bookings).label("bookings"),
+            ).group_by(BookingMatch.branch).all()
+        ]
+
+        return _api_response(data={
+            "total_matches": total_matches,
+            "total_revenue": total_revenue,
+            "total_bookings": total_bookings,
+            "by_channel": by_channel,
+            "by_branch": by_branch,
+            "period": {"from": df.isoformat(), "to": dt.isoformat()},
+        })
     except Exception as e:
         return _api_response(error=str(e))

@@ -17,6 +17,7 @@ class Reservation(TimestampMixin, Base):
     status = Column(String(50), nullable=True, index=True)
     source = Column(String(100), nullable=True, index=True)
     room_type = Column(String(200), nullable=True)
+    rate_plan_name = Column(String(300), nullable=True)
     branch = Column(String(100), nullable=False, index=True)
     nights = Column(Integer, nullable=True)
     adults = Column(Integer, nullable=True)
