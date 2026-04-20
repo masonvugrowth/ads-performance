@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
+import InfoTag from '@/components/InfoTag'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
@@ -260,13 +261,17 @@ export default function RecommendationsPage() {
               <span className={`px-2 py-0.5 text-xs font-semibold rounded ${STATUS_BADGE[selected.status]}`}>
                 {selected.status}
               </span>
-              <span className="px-2 py-0.5 text-xs font-mono rounded bg-gray-100 text-gray-600">
-                {selected.rec_type}
-              </span>
+              <InfoTag
+                code={selected.rec_type}
+                kind="rec_type"
+                className="px-2 py-0.5 text-xs font-mono rounded bg-gray-100 text-gray-600"
+              />
               {selected.sop_reference && (
-                <span className="px-2 py-0.5 text-xs font-mono rounded bg-gray-100 text-gray-500">
-                  {selected.sop_reference}
-                </span>
+                <InfoTag
+                  code={selected.sop_reference}
+                  kind="sop_reference"
+                  className="px-2 py-0.5 text-xs font-mono rounded bg-gray-100 text-gray-500"
+                />
               )}
             </div>
 
@@ -397,7 +402,11 @@ function RecommendationCard({
             <span className={`px-2 py-0.5 text-[10px] font-bold rounded border ${SEVERITY_BADGE[rec.severity]}`}>
               {rec.severity.toUpperCase()}
             </span>
-            <span className="text-[10px] font-mono text-gray-400">{rec.rec_type}</span>
+            <InfoTag
+              code={rec.rec_type}
+              kind="rec_type"
+              className="text-[10px] font-mono text-gray-400"
+            />
             {rec.campaign_type && (
               <span className="text-[10px] font-mono text-gray-400">· {rec.campaign_type}</span>
             )}

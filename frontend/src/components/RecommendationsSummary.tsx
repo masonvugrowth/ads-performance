@@ -2,6 +2,7 @@
 
 import Link from 'next/link'
 import { useEffect, useState } from 'react'
+import InfoTag from '@/components/InfoTag'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
@@ -83,7 +84,11 @@ export default function RecommendationsSummary() {
               >
                 <span className={`w-1.5 h-1.5 rounded-full ${DOT.critical}`} />
                 <span className="font-medium">{r.title}</span>
-                <span className="text-[10px] font-mono text-gray-400">{r.rec_type}</span>
+                <InfoTag
+                  code={r.rec_type}
+                  kind="rec_type"
+                  className="text-[10px] font-mono text-gray-400"
+                />
               </Link>
             </li>
           ))}
