@@ -1,0 +1,108 @@
+name: Scheduled tasks
+
+# Replaces Celery Beat (Redis was removed from the stack).
+# Each cron hits an /api/internal/tasks/* endpoint on the backend with the
+# shared secret. Endpoints return 202 immediately — the work runs in a
+# daemon thread inside the FastAPI process.
+#
+# All cron times are UTC (GitHub Actions' only supported TZ).
+# Asia/Ho_Chi_Minh = UTC+7, Asia/Taipei = UTC+8.
+#
+# GitHub Actions scheduled workflows can be delayed (up to ~15 min) during
+# periods of high load. For the 15-min sync that's fine; for the hourly
+# expire jobs it's fine too. If strict timing is ever needed, move to a
+# dedicated cron runner.
+
+on:
+  schedule:
+    # 15-min sync — main dashboard refresh
+    - cron: "*/15 * * * *"
+    # Daily 23:00 UTC — re-enable paused ads + sync + rule eval
+    - cron: "0 23 * * *"
+    # Daily 00:00 UTC — PMS reservations + booking match
+    - cron: "0 0 * * *"
+    # Daily 22:30 UTC — Google recs daily
+    - cron: "30 22 * * *"
+    # Daily 23:15 UTC — Meta recs daily (shifted 15m from daily-rule-cycle to avoid collision)
+    - cron: "15 23 * * *"
+    # Daily 21:00 UTC — Google recs seasonality
+    - cron: "0 21 * * *"
+    # Daily 21:30 UTC — Meta recs seasonality
+    - cron: "30 21 * * *"
+    # Weekly Mon 01:00 UTC — refresh Meta CDN URLs
+    - cron: "0 1 * * 1"
+    # Weekly Mon 23:00 UTC — Google recs weekly
+    - cron: "0 23 * * 1"
+    # Weekly Mon 23:30 UTC — Meta recs weekly
+    - cron: "30 23 * * 1"
+    # Monthly 1st 23:30 UTC — Google recs monthly
+    - cron: "30 23 1 * *"
+    # Monthly 1st 00:00 UTC — Meta recs monthly
+    - cron: "0 0 1 * *"
+    # Hourly :15 — expire Google recs
+    - cron: "15 * * * *"
+    # Hourly :45 — expire Meta recs
+    - cron: "45 * * * *"
+
+  # Allow manual triggering from the Actions tab for ad-hoc runs / testing.
+  workflow_dispatch:
+    inputs:
+      endpoint:
+        description: "Endpoint path (e.g. sync-all-platforms, daily-rule-cycle)"
+        required: true
+        default: "sync-all-platforms"
+
+env:
+  BACKEND_URL: https://ads-performance-fuls.zeabur.app
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Route cron schedule to endpoint
+        env:
+          INTERNAL_TASK_SECRET: ${{ secrets.INTERNAL_TASK_SECRET }}
+        run: |
+          set -euo pipefail
+
+          # Map the scheduled cron expression (or manual input) to an endpoint.
+          # GITHUB_EVENT_NAME is "schedule" for cron, "workflow_dispatch" for manual.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            ENDPOINT="${{ github.event.inputs.endpoint }}"
+          else
+            case "${{ github.event.schedule }}" in
+              "*/15 * * * *")   ENDPOINT="sync-all-platforms" ;;
+              "0 23 * * *")     ENDPOINT="daily-rule-cycle" ;;
+              "0 0 * * *")      ENDPOINT="sync-reservations-match" ;;
+              "30 22 * * *")    ENDPOINT="google-recommendations/daily" ;;
+              "15 23 * * *")    ENDPOINT="meta-recommendations/daily" ;;
+              "0 21 * * *")     ENDPOINT="google-recommendations/seasonality" ;;
+              "30 21 * * *")    ENDPOINT="meta-recommendations/seasonality" ;;
+              "0 1 * * 1")      ENDPOINT="sync-material-urls" ;;
+              "0 23 * * 1")     ENDPOINT="google-recommendations/weekly" ;;
+              "30 23 * * 1")    ENDPOINT="meta-recommendations/weekly" ;;
+              "30 23 1 * *")    ENDPOINT="google-recommendations/monthly" ;;
+              "0 0 1 * *")      ENDPOINT="meta-recommendations/monthly" ;;
+              "15 * * * *")     ENDPOINT="google-recommendations-expire" ;;
+              "45 * * * *")     ENDPOINT="meta-recommendations-expire" ;;
+              *)
+                echo "Unknown schedule: ${{ github.event.schedule }}"
+                exit 1
+                ;;
+            esac
+          fi
+
+          echo "Triggering endpoint: $ENDPOINT"
+          HTTP_CODE=$(curl -s -o /tmp/body.txt -w "%{http_code}" \
+            -X POST \
+            -H "X-Internal-Secret: $INTERNAL_TASK_SECRET" \
+            "$BACKEND_URL/api/internal/tasks/$ENDPOINT")
+
+          echo "HTTP $HTTP_CODE"
+          cat /tmp/body.txt || true
+          echo
+
+          if [ "$HTTP_CODE" != "202" ]; then
+            echo "::error::endpoint $ENDPOINT returned HTTP $HTTP_CODE"
+            exit 1
+          fi
