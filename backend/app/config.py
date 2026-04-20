@@ -83,6 +83,9 @@ class Settings(BaseSettings):
     # Sync
     SYNC_INTERVAL_MINUTES: int = 15
 
+    # Internal scheduled-task endpoints (Zeabur cron hits these with X-Internal-Secret header)
+    INTERNAL_TASK_SECRET: str = ""
+
     model_config = {"env_file": str(_env_file), "extra": "ignore"}
 
 
