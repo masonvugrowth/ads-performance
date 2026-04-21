@@ -16,8 +16,11 @@ Adds the infrastructure for the new Booking from Ads matching methodology:
     records which ad was responsible and whether the revenue came from the
     website pixel or the offline upload.
 
-Idempotent per project memory: all DDL uses IF NOT EXISTS and the alembic
-version bump is conditional.
+Idempotent per project memory: all DDL uses IF NOT EXISTS.
+Alembic handles the version_num bump internally — do NOT add a manual
+`UPDATE alembic_version` here, it conflicts with alembic's online check.
+If pasting this migration's SQL directly into Supabase, bump version_num
+manually in a separate statement after the DDL.
 """
 from typing import Sequence, Union
 
@@ -74,11 +77,6 @@ def upgrade() -> None:
         op.execute("ALTER TABLE booking_matches ADD COLUMN IF NOT EXISTS ad_name VARCHAR(500)")
         op.execute("ALTER TABLE booking_matches ADD COLUMN IF NOT EXISTS purchase_kind VARCHAR(20)")
         op.execute("CREATE INDEX IF NOT EXISTS ix_booking_matches_ad_id ON booking_matches(ad_id)")
-
-        op.execute(
-            "UPDATE alembic_version SET version_num = '015_ad_country_matching' "
-            "WHERE version_num = '014_booking_rate_plan'"
-        )
     else:
         op.add_column("metrics_cache", sa.Column("revenue_website", sa.Numeric(15, 2), nullable=False, server_default="0"))
         op.add_column("metrics_cache", sa.Column("revenue_offline", sa.Numeric(15, 2), nullable=False, server_default="0"))
