@@ -32,6 +32,8 @@ class MetricsCache(TimestampMixin, Base):
     ctr = Column(Numeric(8, 6), nullable=True)  # clicks / impressions
     conversions = Column(Integer, nullable=False, default=0)
     revenue = Column(Numeric(15, 2), nullable=False, default=0)
+    revenue_website = Column(Numeric(15, 2), nullable=False, default=0)
+    revenue_offline = Column(Numeric(15, 2), nullable=False, default=0)
     roas = Column(Numeric(8, 4), nullable=True)  # revenue / spend
     cpa = Column(Numeric(15, 2), nullable=True)  # spend / conversions
     cpc = Column(Numeric(15, 2), nullable=True)  # spend / clicks

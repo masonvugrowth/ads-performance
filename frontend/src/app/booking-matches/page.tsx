@@ -12,6 +12,9 @@ type BookingMatch = {
   ads_channel: string | null
   campaign_name: string | null
   campaign_id: string | null
+  ad_id: string | null
+  ad_name: string | null
+  purchase_kind: string | null
   reservation_numbers: string | null
   guest_names: string | null
   guest_emails: string | null
@@ -111,6 +114,7 @@ export default function BookingMatchesDashboard() {
   const [branch, setBranch] = useState('')
   const [channel, setChannel] = useState('')
   const [matchResult, setMatchResult] = useState('')
+  const [purchaseKind, setPurchaseKind] = useState('')
 
   const resolveRange = useCallback(() => {
     if (datePreset === 'custom' && customFrom && customTo) {
@@ -133,6 +137,7 @@ export default function BookingMatchesDashboard() {
       if (branch) params.set('branch', branch)
       if (channel) params.set('channel', channel)
       if (matchResult) params.set('match_result', matchResult)
+      if (purchaseKind) params.set('purchase_kind', purchaseKind)
 
       const summaryParams = new URLSearchParams({ date_from: from, date_to: to })
       if (branch) summaryParams.set('branch', branch)
@@ -147,7 +152,7 @@ export default function BookingMatchesDashboard() {
     } finally {
       setLoading(false)
     }
-  }, [resolveRange, branch, channel, matchResult])
+  }, [resolveRange, branch, channel, matchResult, purchaseKind])
 
   useEffect(() => { fetchData() }, [fetchData])
 
@@ -264,6 +269,16 @@ export default function BookingMatchesDashboard() {
         </select>
 
         <select
+          value={purchaseKind}
+          onChange={(e) => setPurchaseKind(e.target.value)}
+          className="px-3 py-2 border border-gray-300 rounded-lg text-sm"
+        >
+          <option value="">All kinds</option>
+          <option value="website">Website</option>
+          <option value="offline">Offline</option>
+        </select>
+
+        <select
           value={matchResult}
           onChange={(e) => setMatchResult(e.target.value)}
           className="px-3 py-2 border border-gray-300 rounded-lg text-sm"
@@ -363,6 +378,9 @@ export default function BookingMatchesDashboard() {
                 <th className="text-left px-3 py-2">Branch</th>
                 <th className="text-left px-3 py-2">Channel</th>
                 <th className="text-left px-3 py-2">Campaign</th>
+                <th className="text-left px-3 py-2">Ad</th>
+                <th className="text-left px-3 py-2">Kind</th>
+                <th className="text-left px-3 py-2">Country</th>
                 <th className="text-left px-3 py-2">Reservation #</th>
                 <th className="text-left px-3 py-2">Guest</th>
                 <th className="text-left px-3 py-2">Status</th>
@@ -375,10 +393,10 @@ export default function BookingMatchesDashboard() {
             </thead>
             <tbody>
               {loading && (
-                <tr><td colSpan={14} className="text-center py-8 text-gray-400">Loading...</td></tr>
+                <tr><td colSpan={17} className="text-center py-8 text-gray-400">Loading...</td></tr>
               )}
               {!loading && matches.length === 0 && (
-                <tr><td colSpan={14} className="text-center py-8 text-gray-400">No matches found</td></tr>
+                <tr><td colSpan={17} className="text-center py-8 text-gray-400">No matches found</td></tr>
               )}
               {matches.map(m => (
                 <tr key={m.id} className={`border-t border-gray-100 ${rowBgColor(m.match_result)}`}>
@@ -388,6 +406,16 @@ export default function BookingMatchesDashboard() {
                   <td className="px-3 py-2">{m.branch}</td>
                   <td className="px-3 py-2 capitalize">{m.ads_channel}</td>
                   <td className="px-3 py-2 max-w-xs truncate" title={m.campaign_name || ''}>{m.campaign_name}</td>
+                  <td className="px-3 py-2 max-w-[200px] truncate" title={m.ad_name || ''}>{m.ad_name}</td>
+                  <td className="px-3 py-2">
+                    {m.purchase_kind === 'website' && (
+                      <span className="inline-block px-1.5 py-0.5 rounded text-[11px] font-medium bg-blue-100 text-blue-800">website</span>
+                    )}
+                    {m.purchase_kind === 'offline' && (
+                      <span className="inline-block px-1.5 py-0.5 rounded text-[11px] font-medium bg-purple-100 text-purple-800">offline</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2 whitespace-nowrap">{m.ads_country}</td>
                   <td className="px-3 py-2 max-w-[140px] truncate" title={m.reservation_numbers || ''}>{m.reservation_numbers}</td>
                   <td className="px-3 py-2 max-w-[160px] truncate" title={m.guest_names || ''}>{m.guest_names}</td>
                   <td className="px-3 py-2">{m.reservation_statuses}</td>

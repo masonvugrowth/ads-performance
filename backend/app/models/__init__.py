@@ -1,5 +1,6 @@
 from app.models.account import AdAccount
 from app.models.ad import Ad
+from app.models.ad_country_metric import AdCountryMetric
 from app.models.ad_set import AdSet
 from app.models.api_key import ApiKey
 from app.models.booking_match import BookingMatch
@@ -25,6 +26,7 @@ from app.models.user_permission import UserPermission
 __all__ = [
     "AdAccount",
     "Ad",
+    "AdCountryMetric",
     "AdSet",
     "ApiKey",
     "BookingMatch",

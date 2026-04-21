@@ -491,6 +491,9 @@ def _parse_metrics_rows(rows: list[Any], entity_id_field: str) -> list[dict]:
             "ctr": (clicks / impressions * 100) if impressions > 0 else 0,
             "conversions": int(conversions),
             "revenue": float(revenue),
+            # Google only has website conversions — no offline upload split.
+            "revenue_website": float(revenue),
+            "revenue_offline": 0.0,
             "roas": float(revenue) / spend if spend > 0 else 0,
             "cpa": spend / conversions if conversions > 0 else None,
             "cpc": spend / clicks if clicks > 0 else None,
@@ -637,6 +640,103 @@ def fetch_ad_metrics(
         raise
     except Exception:
         logger.exception("Failed to fetch ad metrics from Google account %s", customer_id)
+        raise
+
+
+# Google geo_target_constant ID → ISO-2 country code for the countries
+# MEANDER's guests come from most often. Anything not listed is stored as
+# the raw criterion ID so matching still works for long-tail countries.
+_GEO_TARGET_TO_ISO2 = {
+    "2704": "VN", "2392": "JP", "2158": "TW", "2344": "HK",
+    "2702": "SG", "2840": "US", "2826": "GB", "2036": "AU",
+    "2410": "KR", "2756": "CH", "2276": "DE", "2250": "FR",
+    "2380": "IT", "2528": "NL", "2724": "ES", "2124": "CA",
+    "2356": "IN", "2156": "CN", "2458": "MY", "2764": "TH",
+    "2360": "ID", "2608": "PH", "2784": "AE", "2682": "SA",
+    "2376": "IL", "2643": "RU", "2616": "PL", "2578": "NO",
+    "2752": "SE", "2246": "FI", "2208": "DK", "2554": "NZ",
+    "2792": "TR", "2076": "BR", "2032": "AR", "2484": "MX",
+    "2196": "CY", "2300": "GR", "2620": "PT", "2040": "AT",
+    "2056": "BE", "2372": "IE", "2116": "KH", "2418": "LA",
+    "2104": "MM", "2398": "KZ", "2860": "UZ", "2818": "EG",
+    "2634": "QA", "2414": "KW", "2048": "BH", "2512": "OM",
+    "2200": "HR",
+}
+
+
+def fetch_campaign_user_country_metrics(
+    customer_id: str,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> list[dict]:
+    """Fetch daily campaign-level metrics broken down by user location country.
+
+    Uses the `user_location_view` resource with `segments.geo_target_country`
+    so we get the actual user's country at the time of the click/conversion —
+    matching what the Google Ads UI shows under "Country/Territory (User location)".
+    Returns rows with ISO-2 country codes; unknown criterion IDs stay as their
+    numeric string so the matcher can still see them.
+    """
+    customer_id = customer_id.replace("-", "")
+    client = _get_client()
+
+    if date_from is None:
+        date_from = date.today() - timedelta(days=7)
+    if date_to is None:
+        date_to = date.today()
+
+    query = f"""
+        SELECT
+            campaign.id,
+            segments.date,
+            segments.geo_target_country,
+            metrics.cost_micros,
+            metrics.impressions,
+            metrics.clicks,
+            metrics.conversions,
+            metrics.conversions_value
+        FROM user_location_view
+        WHERE segments.date BETWEEN '{date_from.isoformat()}' AND '{date_to.isoformat()}'
+            AND campaign.status != 'REMOVED'
+    """
+
+    try:
+        rows = _search_stream(client, customer_id, query)
+        results = []
+        for row in rows:
+            # segments.geo_target_country is a resource name like
+            # "geoTargetConstants/2704" — take the trailing ID.
+            geo_resource = row.segments.geo_target_country or ""
+            criterion_id = geo_resource.split("/")[-1] if geo_resource else ""
+            country = _GEO_TARGET_TO_ISO2.get(criterion_id, criterion_id)
+            if not country:
+                continue
+
+            m = row.metrics
+            spend = _micros_to_currency(m.cost_micros) or 0
+            revenue = float(m.conversions_value or 0)
+
+            results.append({
+                "campaign_id": str(row.campaign.id),
+                "date": row.segments.date,
+                "country": country,
+                "spend": spend,
+                "impressions": m.impressions or 0,
+                "clicks": m.clicks or 0,
+                "conversions": int(m.conversions or 0),
+                "revenue_website": revenue,
+                "revenue_offline": 0.0,
+            })
+        logger.info(
+            "Fetched %d campaign×user-country rows from Google account %s",
+            len(results), customer_id,
+        )
+        return results
+    except GoogleAdsException as ex:
+        logger.exception("Google Ads API error fetching user_location_view: %s", ex.failure)
+        raise
+    except Exception:
+        logger.exception("Failed to fetch user_location_view from Google account %s", customer_id)
         raise
 
 

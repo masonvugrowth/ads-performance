@@ -12,14 +12,16 @@ from app.core.permissions import accessible_branches, is_admin
 from app.database import get_db
 from app.dependencies.auth import get_current_user, require_section
 from app.models.account import AdAccount
+from app.models.ad import Ad
+from app.models.ad_country_metric import AdCountryMetric
 from app.models.booking_match import BookingMatch
 from app.models.campaign import Campaign
-from app.models.metrics import MetricsCache
 from app.models.reservation import Reservation
 from app.models.user import User
 from app.routers.accounts import BRANCH_ACCOUNT_MAP, branch_name_patterns
 from app.services.booking_match_service import (
     AMOUNT_TOLERANCE,
+    country_iso_matches_reservation,
     normalize_branch,
     run_matching,
 )
@@ -86,6 +88,9 @@ def _serialize_match(m: BookingMatch) -> dict:
         "ads_channel": m.ads_channel,
         "campaign_name": m.campaign_name,
         "campaign_id": m.campaign_id,
+        "ad_id": m.ad_id,
+        "ad_name": m.ad_name,
+        "purchase_kind": m.purchase_kind,
         "reservation_numbers": m.reservation_numbers,
         "guest_names": m.guest_names,
         "guest_emails": m.guest_emails,
@@ -107,6 +112,7 @@ def list_booking_matches(
     branch: str = Query(None),
     channel: str = Query(None),
     match_result: str = Query(None),
+    purchase_kind: str = Query(None, description="website | offline"),
     limit: int = Query(200, le=1000),
     offset: int = Query(0),
     current_user: User = Depends(require_section("analytics")),
@@ -133,6 +139,8 @@ def list_booking_matches(
             q = q.filter(BookingMatch.ads_channel == channel)
         if match_result:
             q = q.filter(BookingMatch.match_result == match_result)
+        if purchase_kind:
+            q = q.filter(BookingMatch.purchase_kind == purchase_kind)
 
         total = q.count()
         rows = q.order_by(BookingMatch.match_date.desc()).offset(offset).limit(limit).all()
@@ -379,72 +387,94 @@ def diagnose_reservation(
             .first()
         )
 
-        # Candidate ads rows: same date, same branch (via AdAccount.account_name).
+        # Candidate ads rows — same date + same branch, from ad_country_metrics
+        # (ad×country for Meta, campaign×country for Google).
         ads_candidates: list[dict] = []
         if branch_key and r.reservation_date:
             patterns = BRANCH_ACCOUNT_MAP.get(branch_key, [branch_key])
             rows = (
                 db.query(
-                    MetricsCache.date.label("date"),
-                    MetricsCache.platform.label("platform"),
-                    Campaign.id.label("campaign_id"),
+                    AdCountryMetric.platform.label("platform"),
+                    AdCountryMetric.country.label("country"),
+                    AdCountryMetric.revenue_website.label("revenue_website"),
+                    AdCountryMetric.revenue_offline.label("revenue_offline"),
+                    AdCountryMetric.conversions_website.label("conversions_website"),
+                    AdCountryMetric.conversions_offline.label("conversions_offline"),
                     Campaign.name.label("campaign_name"),
                     AdAccount.account_name.label("account_name"),
-                    func.sum(MetricsCache.revenue).label("revenue"),
-                    func.sum(MetricsCache.conversions).label("bookings"),
+                    Ad.name.label("ad_name"),
                 )
-                .join(Campaign, Campaign.id == MetricsCache.campaign_id)
+                .join(Campaign, Campaign.id == AdCountryMetric.campaign_id)
                 .join(AdAccount, AdAccount.id == Campaign.account_id)
+                .outerjoin(Ad, Ad.id == AdCountryMetric.ad_id)
                 .filter(
-                    MetricsCache.date == r.reservation_date,
-                    MetricsCache.ad_set_id.is_(None),
-                    MetricsCache.ad_id.is_(None),
-                    MetricsCache.revenue > 0,
+                    AdCountryMetric.date == r.reservation_date,
                     or_(*[AdAccount.account_name.ilike(f"%{p}%") for p in patterns]),
-                )
-                .group_by(
-                    MetricsCache.date,
-                    MetricsCache.platform,
-                    Campaign.id,
-                    Campaign.name,
-                    AdAccount.account_name,
                 )
                 .all()
             )
             for row in rows:
-                revenue = float(row.revenue or 0)
-                delta = (revenue - grand_total) if grand_total is not None else None
-                ads_candidates.append({
-                    "platform": row.platform,
-                    "campaign_id": str(row.campaign_id),
-                    "campaign_name": row.campaign_name,
-                    "account_name": row.account_name,
-                    "ads_revenue": revenue,
-                    "ads_bookings": int(row.bookings or 0),
-                    "revenue_delta_vs_grand_total": delta,
-                    "within_tolerance": (
-                        delta is not None and abs(delta) < AMOUNT_TOLERANCE
-                    ),
-                })
+                rev_web = float(row.revenue_website or 0)
+                rev_off = float(row.revenue_offline or 0)
+                if rev_web <= 0 and rev_off <= 0:
+                    continue
+                country_match = country_iso_matches_reservation(row.country, r.country)
+                entries = []
+                if rev_web > 0:
+                    entries.append(("website", rev_web, int(row.conversions_website or 0)))
+                if rev_off > 0:
+                    entries.append(("offline", rev_off, int(row.conversions_offline or 0)))
+                for kind, rev, bk in entries:
+                    delta = (rev - grand_total) if grand_total is not None else None
+                    ads_candidates.append({
+                        "platform": row.platform,
+                        "country": row.country,
+                        "country_matches_reservation": country_match,
+                        "campaign_name": row.campaign_name,
+                        "ad_name": row.ad_name,
+                        "account_name": row.account_name,
+                        "purchase_kind": kind,
+                        "ads_revenue": rev,
+                        "ads_bookings": bk,
+                        "revenue_delta_vs_grand_total": delta,
+                        "within_tolerance": (
+                            delta is not None and abs(delta) < AMOUNT_TOLERANCE
+                        ),
+                    })
 
+        reservation_kind = "website" if (r.source or "").strip().lower() == "website/booking engine" else "offline"
         reasons: list[str] = []
         if not branch_key:
-            reasons.append(
-                f"branch '{r.branch}' could not be normalised to a hotel key"
-            )
+            reasons.append(f"branch '{r.branch}' could not be normalised to a hotel key")
         if grand_total is None:
             reasons.append("reservation.grand_total is NULL")
         if not r.reservation_date:
             reasons.append("reservation.reservation_date is NULL")
+
+        same_kind = [c for c in ads_candidates if c["purchase_kind"] == reservation_kind]
         if not ads_candidates and branch_key and r.reservation_date:
             reasons.append(
-                f"no campaign-level ads metrics with revenue>0 on {r.reservation_date} for branch {branch_key}"
+                f"no ad×country rows for branch {branch_key} on {r.reservation_date}"
             )
-        if ads_candidates and not any(c["within_tolerance"] for c in ads_candidates):
+        elif ads_candidates and not same_kind:
             reasons.append(
-                "ads revenue does not equal reservation.grand_total within tolerance "
-                f"(±{AMOUNT_TOLERANCE}) on any candidate row"
+                f"no ads revenue of kind '{reservation_kind}' on this date/branch — "
+                f"candidates only have {sorted({c['purchase_kind'] for c in ads_candidates})}"
             )
+        elif same_kind:
+            matching_country = [c for c in same_kind if c["country_matches_reservation"]]
+            if grand_total is not None and matching_country and not any(
+                c["within_tolerance"] for c in matching_country
+            ):
+                reasons.append(
+                    f"ads revenue does not equal grand_total within ±{AMOUNT_TOLERANCE} "
+                    f"on any same-kind + same-country row"
+                )
+            if not matching_country:
+                reasons.append(
+                    f"no same-kind row where ads country matches reservation.country "
+                    f"({r.country!r})"
+                )
 
         return _api_response(data={
             "reservation": {

@@ -164,13 +164,19 @@ def fetch_campaign_insights(
         )
 
         # Action types to extract from Meta's actions array.
-        # Use omni_* (Meta's pre-deduped unified metrics covering pixel + onsite + in-store + app).
-        # Meta returns the same event under multiple action_type keys — omni_* is the canonical unified one.
-        PURCHASE_TYPES = {"omni_purchase"}  # Meta's unified deduped purchase metric
+        # Main dashboard uses omni_* (Meta's pre-deduped unified metrics covering
+        # pixel + onsite + in-store + app) — see project memory.
+        # For Booking from Ads we additionally track website (fb_pixel_purchase)
+        # and offline (offline_conversion.purchase) separately so we can
+        # match website revenue against Website/Booking Engine reservations
+        # and offline revenue against OTA/Walk-in reservations.
+        PURCHASE_TYPES = {"omni_purchase"}
+        WEBSITE_PURCHASE_TYPES = {"offsite_conversion.fb_pixel_purchase"}
+        OFFLINE_PURCHASE_TYPES = {"offline_conversion.purchase"}
         ADD_TO_CART_TYPES = {"omni_add_to_cart"}
         CHECKOUT_TYPES = {"omni_initiated_checkout"}
         SEARCH_TYPES = {"omni_search"}
-        LEAD_TYPES = {"lead"}  # no omni equivalent for lead
+        LEAD_TYPES = {"lead"}
         LANDING_PAGE_TYPES = {"landing_page_view"}
 
         results = []
@@ -178,7 +184,6 @@ def fetch_campaign_insights(
             actions = row.get("actions") or []
             action_values = row.get("action_values") or []
 
-            # Count actions by type
             conversions = 0
             add_to_cart = 0
             checkouts = 0
@@ -186,6 +191,8 @@ def fetch_campaign_insights(
             leads = 0
             landing_page_views = 0
             revenue = 0.0
+            revenue_website = 0.0
+            revenue_offline = 0.0
 
             for action in actions:
                 atype = action.get("action_type", "")
@@ -204,8 +211,14 @@ def fetch_campaign_insights(
                     landing_page_views += val
 
             for av in action_values:
-                if av.get("action_type") in PURCHASE_TYPES:
-                    revenue += float(av.get("value", 0))
+                atype = av.get("action_type", "")
+                val = float(av.get("value", 0))
+                if atype in PURCHASE_TYPES:
+                    revenue += val
+                if atype in WEBSITE_PURCHASE_TYPES:
+                    revenue_website += val
+                if atype in OFFLINE_PURCHASE_TYPES:
+                    revenue_offline += val
 
             spend = float(row.get("spend", 0))
             impressions = int(row.get("impressions", 0))
@@ -220,6 +233,8 @@ def fetch_campaign_insights(
                 "ctr": float(row.get("ctr", 0)),
                 "conversions": conversions,
                 "revenue": revenue,
+                "revenue_website": revenue_website,
+                "revenue_offline": revenue_offline,
                 "roas": revenue / spend if spend > 0 else 0,
                 "cpa": spend / conversions if conversions > 0 else None,
                 "cpc": float(row.get("cpc", 0)) if row.get("cpc") else None,
@@ -314,9 +329,14 @@ def fetch_ads(account_id: str, access_token: str) -> list[dict]:
 
 
 def _parse_insights_rows(rows, entity_id_key: str) -> list[dict]:
-    """Shared parser for insight rows at any level (campaign/adset/ad)."""
-    # Use omni_* (Meta's pre-deduped unified metrics covering all channels).
-    PURCHASE_TYPES = {"offsite_conversion.fb_pixel_purchase"}
+    """Shared parser for insight rows at any level (campaign/adset/ad).
+
+    `revenue` tracks the website pixel value (fb_pixel_purchase) to match the
+    legacy behaviour. `revenue_website` mirrors it and `revenue_offline` adds
+    offline_conversion.purchase — both are needed by the Booking from Ads matcher.
+    """
+    WEBSITE_PURCHASE_TYPES = {"offsite_conversion.fb_pixel_purchase"}
+    OFFLINE_PURCHASE_TYPES = {"offline_conversion.purchase"}
     ADD_TO_CART_TYPES = {"offsite_conversion.fb_pixel_add_to_cart"}
     CHECKOUT_TYPES = {"offsite_conversion.fb_pixel_initiate_checkout"}
     SEARCH_TYPES = {"offsite_conversion.fb_pixel_search"}
@@ -329,13 +349,17 @@ def _parse_insights_rows(rows, entity_id_key: str) -> list[dict]:
         action_values = row.get("action_values") or []
 
         conversions = add_to_cart = checkouts = searches = leads = landing_page_views = 0
-        revenue = 0.0
+        conversions_offline = 0
+        revenue_website = 0.0
+        revenue_offline = 0.0
 
         for action in actions:
             atype = action.get("action_type", "")
             val = int(action.get("value", 0))
-            if atype in PURCHASE_TYPES:
+            if atype in WEBSITE_PURCHASE_TYPES:
                 conversions += val
+            elif atype in OFFLINE_PURCHASE_TYPES:
+                conversions_offline += val
             elif atype in ADD_TO_CART_TYPES:
                 add_to_cart += val
             elif atype in CHECKOUT_TYPES:
@@ -348,12 +372,17 @@ def _parse_insights_rows(rows, entity_id_key: str) -> list[dict]:
                 landing_page_views += val
 
         for av in action_values:
-            if av.get("action_type") in PURCHASE_TYPES:
-                revenue += float(av.get("value", 0))
+            atype = av.get("action_type", "")
+            val = float(av.get("value", 0))
+            if atype in WEBSITE_PURCHASE_TYPES:
+                revenue_website += val
+            elif atype in OFFLINE_PURCHASE_TYPES:
+                revenue_offline += val
 
         spend = float(row.get("spend", 0))
         impressions = int(row.get("impressions", 0))
         clicks = int(row.get("clicks", 0))
+        revenue = revenue_website  # legacy column tracks website pixel value
 
         result = {
             "entity_id": row.get(entity_id_key),
@@ -364,7 +393,10 @@ def _parse_insights_rows(rows, entity_id_key: str) -> list[dict]:
             "clicks": clicks,
             "ctr": float(row.get("ctr", 0)),
             "conversions": conversions,
+            "conversions_offline": conversions_offline,
             "revenue": revenue,
+            "revenue_website": revenue_website,
+            "revenue_offline": revenue_offline,
             "roas": revenue / spend if spend > 0 else 0,
             "cpa": spend / conversions if conversions > 0 else None,
             "cpc": float(row.get("cpc", 0)) if row.get("cpc") else None,
@@ -375,7 +407,6 @@ def _parse_insights_rows(rows, entity_id_key: str) -> list[dict]:
             "leads": leads,
             "landing_page_views": landing_page_views,
         }
-        # Add adset_id for ad-level insights
         if "adset_id" in row:
             result["adset_id"] = row["adset_id"]
         results.append(result)
@@ -442,4 +473,46 @@ def fetch_ad_insights(
         return results
     except Exception:
         logger.exception("Failed to fetch ad insights from Meta account %s", account_id)
+        raise
+
+
+def fetch_ad_country_insights(
+    account_id: str,
+    access_token: str,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> list[dict]:
+    """Fetch daily ad-level insights broken down by country (ISO-2 code).
+
+    Returns rows with revenue split into website (fb_pixel_purchase) and
+    offline (offline_conversion.purchase), plus the country code, for the
+    Booking from Ads matcher.
+    """
+    _init_api(access_token)
+    if date_from is None:
+        date_from = date.today() - timedelta(days=7)
+    if date_to is None:
+        date_to = date.today()
+
+    try:
+        account = AdAccount(account_id)
+        insights = account.get_insights(
+            fields=INSIGHT_FIELDS + ["ad_id", "ad_name", "adset_id"],
+            params={
+                "level": "ad",
+                "breakdowns": ["country"],
+                "time_range": {"since": date_from.isoformat(), "until": date_to.isoformat()},
+                "time_increment": 1,
+            },
+        )
+        parsed = _parse_insights_rows(insights, "ad_id")
+        # Attach the country value from the raw breakdown row.
+        for raw, out in zip(insights, parsed):
+            out["country"] = (raw.get("country") or "").upper() or None
+        logger.info(
+            "Fetched %d ad×country insight rows from Meta account %s", len(parsed), account_id,
+        )
+        return parsed
+    except Exception:
+        logger.exception("Failed to fetch ad×country insights from Meta account %s", account_id)
         raise

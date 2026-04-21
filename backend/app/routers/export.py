@@ -188,6 +188,7 @@ def export_booking_matches(
     branch: str = Query(None, description="Canonical branch key: Saigon|Taipei|1948|Osaka|Oani"),
     channel: str = Query(None, description="Ads channel: meta|google"),
     match_result: str = Query(None),
+    purchase_kind: str = Query(None, description="website | offline"),
     limit: int = Query(500, le=2000),
     offset: int = Query(0, ge=0),
     api_key: ApiKey = Depends(validate_api_key),
@@ -211,6 +212,8 @@ def export_booking_matches(
             q = q.filter(BookingMatch.ads_channel == channel)
         if match_result:
             q = q.filter(BookingMatch.match_result == match_result)
+        if purchase_kind:
+            q = q.filter(BookingMatch.purchase_kind == purchase_kind)
 
         total = q.count()
         rows = (
@@ -230,6 +233,9 @@ def export_booking_matches(
                 "ads_channel": m.ads_channel,
                 "campaign_name": m.campaign_name,
                 "campaign_id": str(m.campaign_id) if m.campaign_id else None,
+                "ad_id": str(m.ad_id) if m.ad_id else None,
+                "ad_name": m.ad_name,
+                "purchase_kind": m.purchase_kind,
                 "reservation_numbers": m.reservation_numbers,
                 "guest_names": m.guest_names,
                 "guest_emails": m.guest_emails,

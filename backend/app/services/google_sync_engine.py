@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.models.account import AdAccount
 from app.models.ad import Ad
+from app.models.ad_country_metric import AdCountryMetric
 from app.models.ad_set import AdSet
 from app.models.campaign import Campaign
 from app.models.google_asset_group import GoogleAssetGroup
@@ -25,6 +26,7 @@ from app.services.google_client import (
     fetch_asset_groups,
     fetch_campaign_brand_exclusions,
     fetch_campaign_metrics,
+    fetch_campaign_user_country_metrics,
     fetch_campaigns,
     fetch_conversion_action_metrics,
 )
@@ -73,6 +75,8 @@ def _upsert_google_metrics(
         "searches": insight.get("searches", 0),
         "leads": insight.get("leads", 0),
         "landing_page_views": insight.get("landing_page_views", 0),
+        "revenue_website": insight.get("revenue_website", insight.get("revenue", 0)),
+        "revenue_offline": insight.get("revenue_offline", 0),
         "computed_at": now,
     }
 
@@ -499,6 +503,71 @@ def sync_google_account(db: Session, account: AdAccount) -> dict:
             setattr(existing, row["column"], current + row["value"])
 
     db.commit()
+
+    # --- Ad-country breakdown for Booking-from-Ads matcher (Google has no
+    #     ad-level user_location breakdown, so we keep this at campaign level).
+    try:
+        country_rows = fetch_campaign_user_country_metrics(customer_id, date_from, date_to)
+    except Exception as e:
+        summary["errors"].append(f"Failed to fetch user_location_view: {e}")
+        country_rows = []
+
+    ad_country_rows = 0
+    now = datetime.now(timezone.utc)
+    for row in country_rows:
+        campaign = (
+            db.query(Campaign)
+            .filter(Campaign.platform_campaign_id == row["campaign_id"])
+            .first()
+        )
+        if not campaign:
+            continue
+
+        insight_date = (
+            date.fromisoformat(row["date"])
+            if isinstance(row["date"], str)
+            else row["date"]
+        )
+        country = row.get("country")
+        if not country:
+            continue
+
+        existing = (
+            db.query(AdCountryMetric)
+            .filter(
+                AdCountryMetric.campaign_id == campaign.id,
+                AdCountryMetric.ad_id.is_(None),
+                AdCountryMetric.date == insight_date,
+                AdCountryMetric.country == country,
+            )
+            .first()
+        )
+        values = {
+            "spend": row.get("spend") or 0,
+            "impressions": row.get("impressions") or 0,
+            "clicks": row.get("clicks") or 0,
+            "revenue_website": row.get("revenue_website") or 0,
+            "revenue_offline": row.get("revenue_offline") or 0,
+            "conversions_website": row.get("conversions") or 0,
+            "conversions_offline": 0,
+        }
+        if existing:
+            for k, v in values.items():
+                setattr(existing, k, v)
+            existing.updated_at = now
+        else:
+            db.add(AdCountryMetric(
+                platform="google",
+                campaign_id=campaign.id,
+                ad_id=None,
+                date=insight_date,
+                country=country,
+                **values,
+            ))
+        ad_country_rows += 1
+    db.commit()
+    summary["ad_country_rows"] = ad_country_rows
+
     logger.info(
         "Google sync complete for account %s: %d campaigns, %d ad groups, "
         "%d ads, %d asset groups, %d assets, %d metrics rows",

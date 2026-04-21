@@ -12,11 +12,13 @@ from sqlalchemy.orm import Session
 
 from app.models.account import AdAccount
 from app.models.ad import Ad
+from app.models.ad_country_metric import AdCountryMetric
 from app.models.ad_set import AdSet
 from app.models.campaign import Campaign
 from app.models.metrics import MetricsCache
 from app.services.parse_utils import parse_adset_metadata, parse_campaign_metadata
 from app.services.meta_client import (
+    fetch_ad_country_insights,
     fetch_ad_insights,
     fetch_ad_set_insights,
     fetch_ad_sets,
@@ -62,6 +64,8 @@ def _upsert_metrics_row(
         "ctr": insight["ctr"],
         "conversions": insight["conversions"],
         "revenue": insight["revenue"],
+        "revenue_website": insight.get("revenue_website", insight["revenue"]),
+        "revenue_offline": insight.get("revenue_offline", 0),
         "roas": insight["roas"],
         "cpa": insight["cpa"],
         "cpc": insight["cpc"],
@@ -349,6 +353,71 @@ def sync_meta_account(db: Session, account: AdAccount) -> dict:
         summary["metrics_synced"] += 1
 
     db.commit()
+
+    # --- 6b. Fetch ad × country insights for Booking-from-Ads matching ---
+    try:
+        country_insights = fetch_ad_country_insights(meta_account_id, access_token, date_from, date_to)
+    except Exception as e:
+        summary["errors"].append(f"Failed to fetch ad×country insights: {e}")
+        country_insights = []
+
+    ad_country_rows = 0
+    now = datetime.now(timezone.utc)
+    for insight in country_insights:
+        platform_ad_id = insight.get("entity_id")
+        country = insight.get("country")
+        if not platform_ad_id or not country:
+            continue
+
+        ad_obj = (
+            db.query(Ad)
+            .filter(Ad.platform_ad_id == platform_ad_id)
+            .first()
+        )
+        if not ad_obj:
+            continue
+
+        insight_date = (
+            date.fromisoformat(insight["date"])
+            if isinstance(insight["date"], str)
+            else insight["date"]
+        )
+
+        existing = (
+            db.query(AdCountryMetric)
+            .filter(
+                AdCountryMetric.ad_id == ad_obj.id,
+                AdCountryMetric.date == insight_date,
+                AdCountryMetric.country == country,
+            )
+            .first()
+        )
+        values = {
+            "spend": insight.get("spend") or 0,
+            "impressions": insight.get("impressions") or 0,
+            "clicks": insight.get("clicks") or 0,
+            "revenue_website": insight.get("revenue_website") or 0,
+            "revenue_offline": insight.get("revenue_offline") or 0,
+            "conversions_website": insight.get("conversions") or 0,
+            "conversions_offline": insight.get("conversions_offline") or 0,
+        }
+        if existing:
+            for k, v in values.items():
+                setattr(existing, k, v)
+            existing.updated_at = now
+        else:
+            db.add(AdCountryMetric(
+                platform="meta",
+                campaign_id=ad_obj.campaign_id,
+                ad_id=ad_obj.id,
+                date=insight_date,
+                country=country,
+                **values,
+            ))
+        ad_country_rows += 1
+
+    db.commit()
+    summary["ad_country_rows"] = ad_country_rows
 
     # --- 7. Upsert creative library (materials, copies, combos) from Meta ad creatives ---
     try:

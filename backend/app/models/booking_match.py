@@ -18,6 +18,9 @@ class BookingMatch(TimestampMixin, Base):
         nullable=True,
         index=True,
     )
+    ad_id = Column(UUIDType, nullable=True, index=True)
+    ad_name = Column(String(500), nullable=True)
+    purchase_kind = Column(String(20), nullable=True)  # 'website' or 'offline'
     reservation_ids = Column(String(1000), nullable=True)
     reservation_numbers = Column(String(1000), nullable=True)
     guest_names = Column(String(1000), nullable=True)
