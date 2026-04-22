@@ -43,6 +43,15 @@ on:
     - cron: "15 * * * *"
     # Hourly :45 — expire Meta recs
     - cron: "45 * * * *"
+    # Daily 02:00 UTC — pull Microsoft Clarity Data Export API.
+    # Clarity only retains 3 days of live data, so we must run daily to avoid
+    # gaps. 02:00 UTC avoids collision with the 00:00–01:30 cluster and gives
+    # Clarity enough time to finalize the previous day's data.
+    - cron: "0 2 * * *"
+    # Hourly :30 — refresh landing_page_ad_links by matching Clarity-observed
+    # utm_campaign values to Campaign.name. Picks up new campaigns/ads within
+    # an hour of them being synced from Meta/Google. Idempotent (safe to re-run).
+    - cron: "30 * * * *"
 
   # Allow manual triggering from the Actions tab for ad-hoc runs / testing.
   workflow_dispatch:
@@ -85,6 +94,8 @@ jobs:
               "0 0 1 * *")      ENDPOINT="meta-recommendations/monthly" ;;
               "15 * * * *")     ENDPOINT="google-recommendations-expire" ;;
               "45 * * * *")     ENDPOINT="meta-recommendations-expire" ;;
+              "0 2 * * *")      ENDPOINT="clarity-sync" ;;
+              "30 * * * *")     ENDPOINT="landing-page-import" ;;
               *)
                 echo "Unknown schedule: ${{ github.event.schedule }}"
                 exit 1
