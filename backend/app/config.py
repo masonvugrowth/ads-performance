@@ -99,6 +99,14 @@ class Settings(BaseSettings):
     # Internal scheduled-task endpoints (Zeabur cron hits these with X-Internal-Secret header)
     INTERNAL_TASK_SECRET: str = ""
 
+    # Microsoft Clarity — Data Export API + tracking snippet
+    # Token: long-lived JWT with scope=Data.Export issued in Clarity settings.
+    #        See Settings > Data Export API in the Clarity project dashboard.
+    # Project ID: the 16-digit tracking id embedded in the Clarity JS snippet
+    #             (same value as the token's `sub` claim).
+    CLARITY_API_TOKEN: str = ""
+    CLARITY_PROJECT_ID: str = ""
+
     model_config = {"env_file": str(_env_file), "extra": "ignore"}
 
 

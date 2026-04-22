@@ -19,9 +19,11 @@ from app.routers import (
     google_campaigns,
     google_recommendations,
     internal_tasks,
+    landing_pages,
     launch,
     meta_recommendations,
     notifications,
+    public_landing,
     rules,
     settings as settings_router,
     sync,
@@ -71,6 +73,8 @@ app.include_router(transcriptions.router, prefix="/api", tags=["transcriptions"]
 app.include_router(booking_matches.router, prefix="/api", tags=["booking-matches"])
 app.include_router(internal_tasks.router, prefix="/api", tags=["internal-tasks"])
 app.include_router(settings_router.router, prefix="/api", tags=["settings"])
+app.include_router(landing_pages.router, prefix="/api", tags=["landing-pages"])
+app.include_router(public_landing.router, prefix="/api", tags=["public-landing"])
 
 
 @app.get("/health")

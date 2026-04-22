@@ -28,6 +28,7 @@ SECTIONS: list[str] = [
     "automation",
     "ai",
     "settings",
+    "landing_pages",
 ]
 
 LEVELS: list[str] = ["view", "edit"]

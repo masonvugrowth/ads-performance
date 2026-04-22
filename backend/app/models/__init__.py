@@ -21,6 +21,11 @@ from app.models.google_recommendation import GoogleRecommendation
 from app.models.google_seasonality_event import GoogleSeasonalityEvent
 from app.models.google_search_term_pattern import GoogleSearchTermPattern
 from app.models.meta_recommendation import MetaRecommendation
+from app.models.landing_page import LandingPage
+from app.models.landing_page_version import LandingPageVersion
+from app.models.landing_page_approval import LandingPageApproval, LandingPageApprovalReviewer
+from app.models.landing_page_ad_link import LandingPageAdLink
+from app.models.landing_page_clarity import LandingPageClaritySnapshot
 from app.models.user import User
 from app.models.user_permission import UserPermission
 
@@ -40,6 +45,12 @@ __all__ = [
     "GoogleRecommendation",
     "GoogleSeasonalityEvent",
     "GoogleSearchTermPattern",
+    "LandingPage",
+    "LandingPageVersion",
+    "LandingPageApproval",
+    "LandingPageApprovalReviewer",
+    "LandingPageAdLink",
+    "LandingPageClaritySnapshot",
     "MetaRecommendation",
     "MetricsCache",
     "Reservation",

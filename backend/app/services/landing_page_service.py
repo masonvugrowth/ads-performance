@@ -1,0 +1,488 @@
+"""Landing Page service: CRUD, version management, approval lifecycle, metrics rollup.
+
+Design notes (see CLAUDE.md):
+- Versions are INSERT-only. Publishing a version updates landing_pages.current_version_id.
+- All-approve rule: ALL reviewers must approve for status=APPROVED. ANY reject = REJECTED.
+- Creator-only publish: only the submitter can flip APPROVED → PUBLISHED.
+"""
+from __future__ import annotations
+
+from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
+from typing import Any
+
+from sqlalchemy import and_, func, or_
+from sqlalchemy.orm import Session
+
+from app.models.ad import Ad
+from app.models.account import AdAccount
+from app.models.campaign import Campaign
+from app.models.landing_page import (
+    LandingPage,
+    SOURCE_EXTERNAL,
+    SOURCE_MANAGED,
+    STATUS_APPROVED,
+    STATUS_ARCHIVED,
+    STATUS_DISCOVERED,
+    STATUS_DRAFT,
+    STATUS_PENDING_APPROVAL,
+    STATUS_PUBLISHED,
+    STATUS_REJECTED,
+)
+from app.models.landing_page_ad_link import LandingPageAdLink
+from app.models.landing_page_approval import (
+    APPROVAL_APPROVED,
+    APPROVAL_CANCELLED,
+    APPROVAL_PENDING,
+    APPROVAL_REJECTED,
+    LandingPageApproval,
+    LandingPageApprovalReviewer,
+    REVIEWER_APPROVED,
+    REVIEWER_PENDING,
+    REVIEWER_REJECTED,
+)
+from app.models.landing_page_clarity import LandingPageClaritySnapshot
+from app.models.landing_page_version import LandingPageVersion
+from app.models.metrics import MetricsCache
+from app.services.landing_page_url_normalizer import (
+    UTM_KEYS,
+    infer_branch_from_host,
+    normalize_url,
+)
+
+
+# ---------------------------------------------------------------------------
+# Page lookup + upsert (used by importer + manual create)
+# ---------------------------------------------------------------------------
+
+
+def get_or_create_external_page(
+    db: Session,
+    *,
+    raw_url: str,
+    title_fallback: str | None = None,
+    branch_id: str | None = None,
+) -> LandingPage | None:
+    """Upsert landing_pages row for an external (ad-discovered) URL.
+
+    Match by (domain, slug). Creates a DISCOVERED/external row on first sight.
+    """
+    n = normalize_url(raw_url)
+    if n is None:
+        return None
+
+    page = (
+        db.query(LandingPage)
+        .filter(LandingPage.domain == n.host, LandingPage.slug == n.slug)
+        .one_or_none()
+    )
+    if page is not None:
+        return page
+
+    # Best-effort branch inference via subdomain
+    if branch_id is None:
+        branch_name = infer_branch_from_host(n.host)
+        if branch_name:
+            acct = (
+                db.query(AdAccount)
+                .filter(AdAccount.is_active.is_(True))
+                .filter(
+                    or_(
+                        AdAccount.account_name.ilike(f"%{branch_name}%"),
+                        AdAccount.account_name.ilike(f"%Meander {branch_name}%"),
+                    )
+                )
+                .first()
+            )
+            if acct:
+                branch_id = acct.id
+
+    page = LandingPage(
+        source=SOURCE_EXTERNAL,
+        branch_id=branch_id,
+        title=title_fallback or f"{n.host}/{n.slug}" or n.host,
+        domain=n.host,
+        slug=n.slug,
+        status=STATUS_DISCOVERED,
+        is_active=True,
+    )
+    db.add(page)
+    db.flush()
+    return page
+
+
+# ---------------------------------------------------------------------------
+# Versions (managed pages only)
+# ---------------------------------------------------------------------------
+
+
+def create_version(
+    db: Session,
+    *,
+    landing_page_id: str,
+    content: dict[str, Any],
+    created_by: str | None = None,
+    change_note: str | None = None,
+) -> LandingPageVersion:
+    """Append a new version. Page moves back to DRAFT if it was REJECTED."""
+    page = db.query(LandingPage).filter(LandingPage.id == landing_page_id).one()
+    if page.source != SOURCE_MANAGED:
+        raise ValueError("Cannot create content version on an external landing page")
+
+    # version_num: next integer after the current max for this page
+    current_max = (
+        db.query(func.max(LandingPageVersion.version_num))
+        .filter(LandingPageVersion.landing_page_id == landing_page_id)
+        .scalar()
+        or 0
+    )
+    v = LandingPageVersion(
+        landing_page_id=landing_page_id,
+        version_num=current_max + 1,
+        content=content,
+        created_by=created_by,
+        change_note=change_note,
+    )
+    db.add(v)
+
+    # If the page was REJECTED, a new version resets it to DRAFT
+    if page.status == STATUS_REJECTED:
+        page.status = STATUS_DRAFT
+    db.flush()
+    return v
+
+
+def publish_version(
+    db: Session,
+    *,
+    version_id: str,
+    actor_user_id: str | None = None,
+) -> LandingPage:
+    """Move a version to PUBLISHED state (requires APPROVED first).
+
+    Creator-only: the submitter of the approval record is the only one who
+    may publish (mirrors the combo-launch rule in CLAUDE.md).
+    """
+    v = db.query(LandingPageVersion).filter(LandingPageVersion.id == version_id).one()
+    page = db.query(LandingPage).filter(LandingPage.id == v.landing_page_id).one()
+
+    if page.status not in (STATUS_APPROVED, STATUS_PUBLISHED):
+        raise ValueError(
+            f"Cannot publish: page status is {page.status}, must be APPROVED"
+        )
+
+    # Verify creator-only: the latest approval record must have this user as submitter
+    if actor_user_id is not None:
+        latest_appr = (
+            db.query(LandingPageApproval)
+            .filter(
+                LandingPageApproval.landing_page_id == page.id,
+                LandingPageApproval.version_id == version_id,
+            )
+            .order_by(LandingPageApproval.submitted_at.desc())
+            .first()
+        )
+        if latest_appr and latest_appr.submitted_by and latest_appr.submitted_by != actor_user_id:
+            raise PermissionError("Only the submitter may publish this version")
+
+    now = datetime.now(timezone.utc)
+    v.published_at = now
+    page.current_version_id = v.id
+    page.status = STATUS_PUBLISHED
+    page.published_at = now
+    db.flush()
+    return page
+
+
+# ---------------------------------------------------------------------------
+# Approvals (mirror combo_approvals logic)
+# ---------------------------------------------------------------------------
+
+
+def submit_for_approval(
+    db: Session,
+    *,
+    landing_page_id: str,
+    version_id: str,
+    submitted_by: str,
+    reviewer_ids: list[str],
+    deadline_hours: int | None = 48,
+) -> LandingPageApproval:
+    page = db.query(LandingPage).filter(LandingPage.id == landing_page_id).one()
+    if page.source != SOURCE_MANAGED:
+        raise ValueError("Only managed pages can be submitted for approval")
+    if page.status not in (STATUS_DRAFT, STATUS_REJECTED):
+        raise ValueError(f"Cannot submit: status is {page.status}")
+    if not reviewer_ids:
+        raise ValueError("At least one reviewer required")
+
+    # Cancel any in-flight approvals for this page
+    inflight = (
+        db.query(LandingPageApproval)
+        .filter(
+            LandingPageApproval.landing_page_id == landing_page_id,
+            LandingPageApproval.status == APPROVAL_PENDING,
+        )
+        .all()
+    )
+    now = datetime.now(timezone.utc)
+    for appr in inflight:
+        appr.status = APPROVAL_CANCELLED
+        appr.resolved_at = now
+
+    deadline = now + timedelta(hours=deadline_hours) if deadline_hours else None
+    appr = LandingPageApproval(
+        landing_page_id=landing_page_id,
+        version_id=version_id,
+        status=APPROVAL_PENDING,
+        submitted_by=submitted_by,
+        submitted_at=now,
+        deadline=deadline,
+    )
+    db.add(appr)
+    db.flush()
+
+    for rid in set(reviewer_ids):
+        rev = LandingPageApprovalReviewer(
+            approval_id=appr.id,
+            reviewer_id=rid,
+            status=REVIEWER_PENDING,
+        )
+        db.add(rev)
+
+    page.status = STATUS_PENDING_APPROVAL
+    db.flush()
+    return appr
+
+
+def record_reviewer_decision(
+    db: Session,
+    *,
+    approval_id: str,
+    reviewer_id: str,
+    decision: str,  # APPROVED | REJECTED
+    comment: str | None = None,
+) -> LandingPageApproval:
+    if decision not in (REVIEWER_APPROVED, REVIEWER_REJECTED):
+        raise ValueError(f"Invalid decision: {decision}")
+
+    row = (
+        db.query(LandingPageApprovalReviewer)
+        .filter(
+            LandingPageApprovalReviewer.approval_id == approval_id,
+            LandingPageApprovalReviewer.reviewer_id == reviewer_id,
+        )
+        .one_or_none()
+    )
+    if row is None:
+        raise PermissionError("Reviewer not assigned to this approval")
+    if row.status != REVIEWER_PENDING:
+        raise ValueError(f"Already decided: {row.status}")
+
+    now = datetime.now(timezone.utc)
+    row.status = decision
+    row.comment = comment
+    row.decided_at = now
+    db.flush()
+
+    # Recompute approval status
+    appr = db.query(LandingPageApproval).filter(LandingPageApproval.id == approval_id).one()
+    page = db.query(LandingPage).filter(LandingPage.id == appr.landing_page_id).one()
+
+    all_reviewers = (
+        db.query(LandingPageApprovalReviewer)
+        .filter(LandingPageApprovalReviewer.approval_id == approval_id)
+        .all()
+    )
+    statuses = {r.status for r in all_reviewers}
+
+    if REVIEWER_REJECTED in statuses:
+        # ANY reject → REJECTED
+        appr.status = APPROVAL_REJECTED
+        appr.resolved_at = now
+        if not appr.reject_reason and comment:
+            appr.reject_reason = comment
+        page.status = STATUS_REJECTED
+    elif statuses == {REVIEWER_APPROVED}:
+        # ALL approve → APPROVED
+        appr.status = APPROVAL_APPROVED
+        appr.resolved_at = now
+        page.status = STATUS_APPROVED
+    # else: still has PENDING reviewers → stay PENDING_APPROVAL
+
+    db.flush()
+    return appr
+
+
+# ---------------------------------------------------------------------------
+# Metrics rollup (ads + Clarity)
+# ---------------------------------------------------------------------------
+
+
+def rollup_metrics(
+    db: Session,
+    *,
+    landing_page_id: str,
+    date_from: date,
+    date_to: date,
+) -> dict[str, Any]:
+    """Aggregate ad metrics + Clarity metrics for a landing page over a date range.
+
+    Ad metrics (spend/clicks/conversions/revenue) are pulled from MetricsCache
+    joined via landing_page_ad_links → campaigns (and optionally ads for
+    ad-level detail).
+
+    Clarity metrics (sessions/scroll/rage/etc.) come from
+    landing_page_clarity_snapshots — aggregate row (NULL UTMs) is summed.
+    """
+    # --- Ad side: sum over unique campaign_ids linked to this page ---
+    campaign_ids = [
+        row[0]
+        for row in db.query(LandingPageAdLink.campaign_id)
+        .filter(
+            LandingPageAdLink.landing_page_id == landing_page_id,
+            LandingPageAdLink.campaign_id.isnot(None),
+        )
+        .distinct()
+        .all()
+    ]
+
+    ad_totals = {
+        "spend": 0.0,
+        "impressions": 0,
+        "clicks": 0,
+        "conversions": 0,
+        "revenue": 0.0,
+        "landing_page_views": 0,
+        "ctr": None,
+        "cpc": None,
+        "cpa": None,
+        "roas": None,
+    }
+    by_platform: dict[str, dict[str, float]] = {}
+
+    if campaign_ids:
+        q = (
+            db.query(
+                MetricsCache.platform,
+                func.coalesce(func.sum(MetricsCache.spend), 0).label("spend"),
+                func.coalesce(func.sum(MetricsCache.impressions), 0).label("impressions"),
+                func.coalesce(func.sum(MetricsCache.clicks), 0).label("clicks"),
+                func.coalesce(func.sum(MetricsCache.conversions), 0).label("conversions"),
+                func.coalesce(func.sum(MetricsCache.revenue), 0).label("revenue"),
+                func.coalesce(func.sum(MetricsCache.landing_page_views), 0).label("lpv"),
+            )
+            .filter(
+                MetricsCache.campaign_id.in_(campaign_ids),
+                MetricsCache.date >= date_from,
+                MetricsCache.date <= date_to,
+            )
+            .group_by(MetricsCache.platform)
+        )
+        for row in q.all():
+            spend = float(row.spend or 0)
+            impr = int(row.impressions or 0)
+            clicks = int(row.clicks or 0)
+            convs = int(row.conversions or 0)
+            revenue = float(row.revenue or 0)
+            lpv = int(row.lpv or 0)
+            by_platform[row.platform] = {
+                "spend": spend,
+                "impressions": impr,
+                "clicks": clicks,
+                "conversions": convs,
+                "revenue": revenue,
+                "landing_page_views": lpv,
+                "ctr": (clicks / impr) if impr else None,
+                "cpc": (spend / clicks) if clicks else None,
+                "cpa": (spend / convs) if convs else None,
+                "roas": (revenue / spend) if spend else None,
+            }
+            ad_totals["spend"] += spend
+            ad_totals["impressions"] += impr
+            ad_totals["clicks"] += clicks
+            ad_totals["conversions"] += convs
+            ad_totals["revenue"] += revenue
+            ad_totals["landing_page_views"] += lpv
+
+        if ad_totals["impressions"]:
+            ad_totals["ctr"] = ad_totals["clicks"] / ad_totals["impressions"]
+        if ad_totals["clicks"]:
+            ad_totals["cpc"] = ad_totals["spend"] / ad_totals["clicks"]
+        if ad_totals["conversions"]:
+            ad_totals["cpa"] = ad_totals["spend"] / ad_totals["conversions"]
+        if ad_totals["spend"]:
+            ad_totals["roas"] = ad_totals["revenue"] / ad_totals["spend"]
+
+    # --- Clarity side: aggregate rows (utm_* are NULL) ---
+    clarity = (
+        db.query(
+            func.coalesce(func.sum(LandingPageClaritySnapshot.sessions), 0).label("sessions"),
+            func.coalesce(func.sum(LandingPageClaritySnapshot.distinct_users), 0).label("users"),
+            func.avg(LandingPageClaritySnapshot.avg_scroll_depth).label("scroll"),
+            func.coalesce(func.sum(LandingPageClaritySnapshot.total_time_sec), 0).label("total_time"),
+            func.coalesce(func.sum(LandingPageClaritySnapshot.active_time_sec), 0).label("active_time"),
+            func.coalesce(func.sum(LandingPageClaritySnapshot.dead_clicks), 0).label("dead"),
+            func.coalesce(func.sum(LandingPageClaritySnapshot.rage_clicks), 0).label("rage"),
+            func.coalesce(func.sum(LandingPageClaritySnapshot.error_clicks), 0).label("err"),
+            func.coalesce(func.sum(LandingPageClaritySnapshot.quickback_clicks), 0).label("qback"),
+            func.coalesce(func.sum(LandingPageClaritySnapshot.excessive_scrolls), 0).label("xscroll"),
+            func.coalesce(func.sum(LandingPageClaritySnapshot.script_errors), 0).label("script_err"),
+        )
+        .filter(
+            LandingPageClaritySnapshot.landing_page_id == landing_page_id,
+            LandingPageClaritySnapshot.date >= date_from,
+            LandingPageClaritySnapshot.date <= date_to,
+            LandingPageClaritySnapshot.utm_source.is_(None),
+            LandingPageClaritySnapshot.utm_campaign.is_(None),
+            LandingPageClaritySnapshot.utm_content.is_(None),
+        )
+        .one()
+    )
+
+    sessions = int(clarity.sessions or 0)
+    clarity_data = {
+        "sessions": sessions,
+        "distinct_users": int(clarity.users or 0),
+        "avg_scroll_depth": float(clarity.scroll) if clarity.scroll is not None else None,
+        "total_time_sec": int(clarity.total_time or 0),
+        "active_time_sec": int(clarity.active_time or 0),
+        "dead_clicks": int(clarity.dead or 0),
+        "rage_clicks": int(clarity.rage or 0),
+        "error_clicks": int(clarity.err or 0),
+        "quickback_clicks": int(clarity.qback or 0),
+        "excessive_scrolls": int(clarity.xscroll or 0),
+        "script_errors": int(clarity.script_err or 0),
+        # Useful derived rates:
+        "rage_rate": (int(clarity.rage or 0) / sessions) if sessions else None,
+        "dead_rate": (int(clarity.dead or 0) / sessions) if sessions else None,
+        "quickback_rate": (int(clarity.qback or 0) / sessions) if sessions else None,
+    }
+
+    # --- Cross-signal: CTR from ads → sessions from Clarity (traffic fidelity) ---
+    # If ads report 1000 clicks but Clarity only sees 600 sessions, we leaked
+    # 40% of paid clicks before the page rendered (playbook §5.3 / §7.1).
+    click_to_session = None
+    if ad_totals["clicks"] and sessions:
+        click_to_session = sessions / ad_totals["clicks"]
+
+    # Direct Booking Conversion Rate (the one metric that matters, §1.2)
+    dbcr = None
+    if sessions:
+        dbcr = ad_totals["conversions"] / sessions if ad_totals["conversions"] else 0.0
+
+    return {
+        "landing_page_id": landing_page_id,
+        "date_from": date_from.isoformat(),
+        "date_to": date_to.isoformat(),
+        "ads": {
+            "totals": ad_totals,
+            "by_platform": by_platform,
+            "campaign_count": len(campaign_ids),
+        },
+        "clarity": clarity_data,
+        "derived": {
+            "click_to_session_ratio": click_to_session,
+            "dbcr": dbcr,
+        },
+    }

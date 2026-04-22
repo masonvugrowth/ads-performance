@@ -246,3 +246,45 @@ def trigger_meta_recommendations_expire(
         engine_module=rec_engine,
     )
     return _api_response(data={"status": "started"})
+
+
+# ------------------------------------------------------ landing pages / clarity
+
+def _do_clarity_sync(db, target_date_iso: str | None = None):
+    from app.services.clarity_sync import run_clarity_sync
+    target_date = None
+    if target_date_iso:
+        target_date = date.fromisoformat(target_date_iso)
+    run_clarity_sync(db, target_date=target_date)
+
+
+def _do_landing_page_import(db):
+    from app.services.landing_page_importer import import_from_ads
+    import_from_ads(db)
+
+
+@router.post("/internal/tasks/clarity-sync", status_code=202)
+def trigger_clarity_sync(
+    x_internal_secret: str | None = Header(default=None),
+    target_date: str | None = None,
+):
+    """Daily: pull Microsoft Clarity Data Export API → landing_page_clarity_snapshots.
+
+    Clarity only keeps 3 days of live data so we must run at least daily to
+    avoid gaps. Recommended cron: 01:00 UTC every day (writes to yesterday).
+    `target_date` (YYYY-MM-DD) overrides the default.
+    """
+    _require_secret(x_internal_secret)
+    _run_in_thread(_do_clarity_sync, "clarity-sync", target_date_iso=target_date)
+    return _api_response(data={"status": "started", "target_date": target_date})
+
+
+@router.post("/internal/tasks/landing-page-import", status_code=202)
+def trigger_landing_page_import(
+    x_internal_secret: str | None = Header(default=None),
+):
+    """Periodic: scan all existing ads for destination URLs and upsert
+    `external` landing pages + ad-link rows. Safe to run hourly (idempotent)."""
+    _require_secret(x_internal_secret)
+    _run_in_thread(_do_landing_page_import, "landing-page-import")
+    return _api_response(data={"status": "started"})
