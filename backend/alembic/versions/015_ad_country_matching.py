@@ -37,6 +37,11 @@ def upgrade() -> None:
     bind = op.get_bind()
     is_postgres = bind.dialect.name == "postgresql"
 
+    # Log the alembic_version state at start so we can debug any future
+    # "0 rows matched" failures without guessing at the DB state.
+    current = bind.execute(sa.text("SELECT version_num FROM alembic_version")).fetchall()
+    print(f"[015_ad_country_matching] alembic_version rows at upgrade start: {current}")
+
     if is_postgres:
         op.execute("ALTER TABLE metrics_cache ADD COLUMN IF NOT EXISTS revenue_website NUMERIC(15,2) NOT NULL DEFAULT 0")
         op.execute("ALTER TABLE metrics_cache ADD COLUMN IF NOT EXISTS revenue_offline NUMERIC(15,2) NOT NULL DEFAULT 0")
