@@ -459,17 +459,42 @@ def rollup_metrics(
         "quickback_rate": (int(clarity.qback or 0) / sessions) if sessions else None,
     }
 
-    # --- Cross-signal: CTR from ads → sessions from Clarity (traffic fidelity) ---
-    # If ads report 1000 clicks but Clarity only sees 600 sessions, we leaked
-    # 40% of paid clicks before the page rendered (playbook §5.3 / §7.1).
+    # --- Cross-signal: clicks & LPV from ads → sessions from Clarity ---
+    # click_to_session inflates because Meta's "clicks" counts ALL ad taps
+    # (video plays, profile clicks, likes, ...). landing_page_views is the
+    # more honest denominator — it's Meta's own count of actual page loads.
+    # Playbook §5.3 / §7.1 discuss the pre-render traffic leak this detects.
     click_to_session = None
+    lpv_to_session = None
     if ad_totals["clicks"] and sessions:
         click_to_session = sessions / ad_totals["clicks"]
+    if ad_totals["landing_page_views"] and sessions:
+        lpv_to_session = sessions / ad_totals["landing_page_views"]
 
     # Direct Booking Conversion Rate (the one metric that matters, §1.2)
     dbcr = None
     if sessions:
         dbcr = ad_totals["conversions"] / sessions if ad_totals["conversions"] else 0.0
+
+    # --- Clarity data coverage: how many days in [date_from..date_to] do we
+    # actually have snapshots for? UI uses this to warn when the selected
+    # window is too wide for the data we've synced so far.
+    requested_days = (date_to - date_from).days + 1
+    distinct_dates = (
+        db.query(func.count(func.distinct(LandingPageClaritySnapshot.date)))
+        .filter(
+            LandingPageClaritySnapshot.landing_page_id == landing_page_id,
+            LandingPageClaritySnapshot.date >= date_from,
+            LandingPageClaritySnapshot.date <= date_to,
+        )
+        .scalar()
+        or 0
+    )
+    latest_date_row = (
+        db.query(func.max(LandingPageClaritySnapshot.date))
+        .filter(LandingPageClaritySnapshot.landing_page_id == landing_page_id)
+        .scalar()
+    )
 
     return {
         "landing_page_id": landing_page_id,
@@ -481,8 +506,15 @@ def rollup_metrics(
             "campaign_count": len(campaign_ids),
         },
         "clarity": clarity_data,
+        "clarity_coverage": {
+            "requested_days": requested_days,
+            "days_with_data": int(distinct_dates),
+            "latest_synced_date": latest_date_row.isoformat() if latest_date_row else None,
+            "is_complete": int(distinct_dates) >= requested_days,
+        },
         "derived": {
             "click_to_session_ratio": click_to_session,
+            "lpv_to_session_ratio": lpv_to_session,
             "dbcr": dbcr,
         },
     }

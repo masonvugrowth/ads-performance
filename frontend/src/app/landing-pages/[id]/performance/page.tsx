@@ -109,12 +109,35 @@ export default function LandingPagePerformance() {
 
       {error && <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-2 rounded mb-4 text-sm">{error}</div>}
 
+      {/* Clarity data-coverage warning — appears when the selected window is
+          wider than what we've synced so far. */}
+      {metrics && !metrics.clarity_coverage.is_complete && (
+        <div className="bg-amber-50 border border-amber-200 text-amber-900 px-4 py-2.5 rounded mb-4 text-sm flex items-start gap-2">
+          <span className="text-amber-600 font-bold">⚠</span>
+          <div>
+            <strong>Incomplete Clarity data.</strong>{' '}
+            Showing {metrics.clarity_coverage.days_with_data}/{metrics.clarity_coverage.requested_days} days in the selected range
+            {metrics.clarity_coverage.latest_synced_date && (<> · last synced {new Date(metrics.clarity_coverage.latest_synced_date).toLocaleDateString()}</>)}.
+            Clarity numbers will look low until the daily cron fills in the gap.
+            Compare against <strong>LPV → Session</strong> below for a same-window view.
+          </div>
+        </div>
+      )}
+
       {/* DBCR hero row — playbook §1.2 "the one metric that matters" */}
       <div className="grid grid-cols-4 gap-3 mb-6">
         <BigStat label="DBCR" value={fmtPct(d?.dbcr, 2)} hint="Conversions ÷ Sessions" tone={dbcrTone(d?.dbcr)} />
-        <BigStat label="Click → Session" value={fmtPct(d?.click_to_session_ratio, 1)} hint="Pre-render leak detector (§5.3)" tone={clickToSessionTone(d?.click_to_session_ratio)} />
+        <BigStat label="LPV → Session" value={fmtPct(d?.lpv_to_session_ratio, 1)} hint="Clarity vs Meta LPV (best apples-to-apples)" tone={lpvToSessionTone(d?.lpv_to_session_ratio)} />
         <BigStat label="ROAS" value={a?.roas ? `${a.roas.toFixed(2)}×` : '—'} hint="Revenue ÷ Spend" tone="neutral" />
         <BigStat label="Rage click rate" value={fmtPct(c?.rage_rate, 2)} hint="UX-bug smoke detector" tone={rageTone(c?.rage_rate)} />
+      </div>
+
+      {/* Secondary row — keep Click → Session as a reference (Meta-side inflation context) */}
+      <div className="grid grid-cols-4 gap-3 mb-6">
+        <SmallStat label="Click → Session" value={fmtPct(d?.click_to_session_ratio, 1)} hint="Inflates because Meta 'clicks' counts all ad taps (video, profile, likes, ...)" />
+        <SmallStat label="Sessions" value={fmtNum(c?.sessions)} hint="Unique page visits per Clarity" />
+        <SmallStat label="Conversions" value={fmtNum(a?.conversions)} hint="From ad platforms (Meta + Google)" />
+        <SmallStat label="Spend" value={fmtNum(a?.spend, 0)} hint="Total across linked campaigns" />
       </div>
 
       {/* Ads card */}
@@ -230,6 +253,16 @@ export default function LandingPagePerformance() {
   )
 }
 
+function SmallStat({ label, value, hint }: { label: string; value: string; hint: string }) {
+  return (
+    <div className="rounded-lg border border-gray-200 bg-white p-3">
+      <p className="text-xs text-gray-600 font-medium">{label}</p>
+      <p className="text-xl font-semibold mt-0.5">{value}</p>
+      <p className="text-[11px] text-gray-500 mt-1">{hint}</p>
+    </div>
+  )
+}
+
 function BigStat({ label, value, hint, tone }: { label: string; value: string; hint: string; tone: 'good' | 'warn' | 'bad' | 'neutral' }) {
   const borders = {
     good: 'border-emerald-300 bg-emerald-50',
@@ -268,6 +301,14 @@ function clickToSessionTone(v: number | null | undefined): 'good' | 'warn' | 'ba
   if (v >= 0.6) return 'good'
   if (v >= 0.3) return 'warn'
   return 'bad'  // >70% click leak = slow hero (§9.4)
+}
+function lpvToSessionTone(v: number | null | undefined): 'good' | 'warn' | 'bad' | 'neutral' {
+  if (v === null || v === undefined) return 'neutral'
+  // Clarity ≥60% of LPV is healthy; <40% means sessions are being lost
+  // before the page renders enough to fire the tracking script.
+  if (v >= 0.6) return 'good'
+  if (v >= 0.4) return 'warn'
+  return 'bad'
 }
 function rageTone(v: number | null | undefined): 'good' | 'warn' | 'bad' | 'neutral' {
   if (v === null || v === undefined) return 'neutral'

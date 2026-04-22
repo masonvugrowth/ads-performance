@@ -172,8 +172,15 @@ export type MetricsResponse = {
     dead_rate: number | null
     quickback_rate: number | null
   }
+  clarity_coverage: {
+    requested_days: number
+    days_with_data: number
+    latest_synced_date: string | null
+    is_complete: boolean
+  }
   derived: {
     click_to_session_ratio: number | null
+    lpv_to_session_ratio: number | null
     dbcr: number | null
   }
 }
