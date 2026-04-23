@@ -29,5 +29,5 @@ class AdSet(TimestampMixin, Base):
     targeting = Column(JSONType, nullable=True)
     start_date = Column(Date, nullable=True)
     end_date = Column(Date, nullable=True)
-    country = Column(String(2), nullable=True, index=True)  # Parsed: ISO 3166-1 alpha-2 from name
+    country = Column(String(8), nullable=True, index=True)  # Parsed: ISO 3166-1 alpha-2, or 'ALL' for multi-country adsets
     raw_data = Column(JSONType, nullable=True)
