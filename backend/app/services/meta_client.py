@@ -69,8 +69,12 @@ INSIGHT_FIELDS = [
     "actions",
     "action_values",
     # Video engagement funnel — Meta returns each as a [{action_type, value}] list.
+    # NOTE: video_3_sec_watched_actions was deprecated by Meta (returns
+    # OAuthException 100 "is not valid for fields param") — removed from the
+    # fields list. The video_3s_views column stays in the DB but will be 0
+    # unless/until Meta re-enables the field or we migrate to the newer
+    # video_view action inside the actions[] array.
     "video_play_actions",
-    "video_3_sec_watched_actions",
     "video_thruplay_watched_actions",
     "video_p25_watched_actions",
     "video_p50_watched_actions",
