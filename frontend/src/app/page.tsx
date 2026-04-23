@@ -192,7 +192,7 @@ export default function DashboardPage() {
       fetch(`${API_BASE}/api/dashboard/daily${qs}`, opts).then(r => r.json()),
       fetch(`${API_BASE}/api/dashboard/by-account?${dateParams}${branchParam}${platParam}`, opts).then(r => r.json()),
       fetch(`${API_BASE}/api/dashboard/funnel${qs}`, opts).then(r => r.json()),
-      fetch(`${API_BASE}/api/dashboard/by-branch?${dateParams}${platParam}`, opts).then(r => r.json()),
+      fetch(`${API_BASE}/api/dashboard/by-branch?${dateParams}${branchParam}${platParam}`, opts).then(r => r.json()),
     ])
       .then(([kpiRes, dailyRes, accountRes, funnelRes, branchRes]) => {
         if (kpiRes.success) setKpis(kpiRes.data)
@@ -384,6 +384,26 @@ export default function DashboardPage() {
         ))}
       </div>
 
+      {/* Branch breakdown pies */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+        <BranchPie
+          title="Branch by Cost (VND)"
+          rows={byBranch}
+          valueKey="spend_vnd"
+          selectedBranches={selectedBranches}
+          onToggle={toggleBranch}
+          valueFormatter={(v) => fmtMoney(v, 'VND')}
+        />
+        <BranchPie
+          title="Branch by Conversion"
+          rows={byBranch}
+          valueKey="conversions"
+          selectedBranches={selectedBranches}
+          onToggle={toggleBranch}
+          valueFormatter={(v) => fmtNum(v)}
+        />
+      </div>
+
       {/* Funnel */}
       <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
         <h2 className="text-sm font-semibold text-gray-700 mb-5">Conversion Funnel</h2>
@@ -457,26 +477,6 @@ export default function DashboardPage() {
             </AreaChart>
           </ResponsiveContainer>
         </div>
-      </div>
-
-      {/* Branch breakdown pies */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-        <BranchPie
-          title="Branch by Cost (VND)"
-          rows={byBranch}
-          valueKey="spend_vnd"
-          selectedBranches={selectedBranches}
-          onToggle={toggleBranch}
-          valueFormatter={(v) => fmtMoney(v, 'VND')}
-        />
-        <BranchPie
-          title="Branch by Conversion"
-          rows={byBranch}
-          valueKey="conversions"
-          selectedBranches={selectedBranches}
-          onToggle={toggleBranch}
-          valueFormatter={(v) => fmtNum(v)}
-        />
       </div>
 
       {/* Performance by Branch */}
