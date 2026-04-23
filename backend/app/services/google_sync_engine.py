@@ -5,7 +5,11 @@ Platform separation: this file has NO imports from meta_client.py.
 """
 
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
+
+# Default rolling window for Google metric pulls — keep aligned with Meta
+# (sync_engine.SYNC_LOOKBACK_DAYS) so dashboards show consistent freshness.
+SYNC_LOOKBACK_DAYS = 10
 
 from sqlalchemy.orm import Session
 
@@ -101,10 +105,195 @@ def _upsert_google_metrics(
         db.add(metric)
 
 
-def sync_google_account(db: Session, account: AdAccount) -> dict:
+def sync_google_metrics_window(
+    db: Session,
+    account: AdAccount,
+    date_from: date,
+    date_to: date,
+) -> dict:
+    """Re-pull Google campaign / ad-group / ad metrics + ad×country for a window.
+
+    Used by both the regular sync (default 10-day rolling window) and by the
+    historical backfill endpoint (chunked 30-day windows over N months).
+    Assumes campaigns/ad groups/ads are already in the DB — only metrics rows
+    are written.
+    """
+    customer_id = account.account_id.replace("-", "")
+    summary = {"metrics_synced": 0, "ad_country_rows": 0, "errors": []}
+
+    if not settings.GOOGLE_REFRESH_TOKEN or not settings.GOOGLE_DEVELOPER_TOKEN:
+        summary["errors"].append("Google Ads global credentials missing")
+        return summary
+
+    # --- Campaign-level metrics ---
+    try:
+        raw_metrics = fetch_campaign_metrics(customer_id, date_from, date_to)
+    except Exception as e:
+        summary["errors"].append(f"Failed to fetch campaign metrics: {e}")
+        raw_metrics = []
+
+    for insight in raw_metrics:
+        campaign = (
+            db.query(Campaign)
+            .filter(Campaign.platform_campaign_id == insight["campaign_id"])
+            .first()
+        )
+        if not campaign:
+            continue
+        insight_date = (
+            date.fromisoformat(insight["date"]) if isinstance(insight["date"], str) else insight["date"]
+        )
+        _upsert_google_metrics(db, campaign.id, insight, insight_date)
+        summary["metrics_synced"] += 1
+
+    # --- Ad-group-level metrics ---
+    try:
+        ag_metrics = fetch_ad_group_metrics(customer_id, date_from, date_to)
+    except Exception as e:
+        summary["errors"].append(f"Failed to fetch ad group metrics: {e}")
+        ag_metrics = []
+
+    for insight in ag_metrics:
+        adset = (
+            db.query(AdSet)
+            .filter(AdSet.platform_adset_id == insight["entity_id"])
+            .first()
+        )
+        if not adset:
+            continue
+        insight_date = (
+            date.fromisoformat(insight["date"]) if isinstance(insight["date"], str) else insight["date"]
+        )
+        _upsert_google_metrics(db, adset.campaign_id, insight, insight_date, ad_set_id=adset.id)
+        summary["metrics_synced"] += 1
+
+    # --- Ad-level metrics ---
+    try:
+        ad_metrics_data = fetch_ad_metrics(customer_id, date_from, date_to)
+    except Exception as e:
+        summary["errors"].append(f"Failed to fetch ad metrics: {e}")
+        ad_metrics_data = []
+
+    for insight in ad_metrics_data:
+        ad_obj = (
+            db.query(Ad)
+            .filter(Ad.platform_ad_id == insight["entity_id"])
+            .first()
+        )
+        if not ad_obj:
+            continue
+        insight_date = (
+            date.fromisoformat(insight["date"]) if isinstance(insight["date"], str) else insight["date"]
+        )
+        _upsert_google_metrics(
+            db, ad_obj.campaign_id, insight, insight_date,
+            ad_set_id=ad_obj.ad_set_id, ad_id=ad_obj.id,
+        )
+        summary["metrics_synced"] += 1
+
+    # --- Conversion-action metrics merged into existing campaign rows ---
+    try:
+        conv_action_data = fetch_conversion_action_metrics(customer_id, date_from, date_to)
+    except Exception as e:
+        summary["errors"].append(f"Failed to fetch conversion action metrics: {e}")
+        conv_action_data = []
+
+    for row in conv_action_data:
+        campaign = (
+            db.query(Campaign)
+            .filter(Campaign.platform_campaign_id == row["campaign_id"])
+            .first()
+        )
+        if not campaign:
+            continue
+        insight_date = (
+            date.fromisoformat(row["date"]) if isinstance(row["date"], str) else row["date"]
+        )
+        existing = (
+            db.query(MetricsCache)
+            .filter(
+                MetricsCache.campaign_id == campaign.id,
+                MetricsCache.date == insight_date,
+                MetricsCache.ad_set_id.is_(None),
+                MetricsCache.ad_id.is_(None),
+            )
+            .first()
+        )
+        if existing:
+            current = getattr(existing, row["column"], 0) or 0
+            setattr(existing, row["column"], current + row["value"])
+
+    db.commit()
+
+    # --- Campaign × user_country breakdown (Google has no ad-level user_location) ---
+    try:
+        country_rows = fetch_campaign_user_country_metrics(customer_id, date_from, date_to)
+    except Exception as e:
+        summary["errors"].append(f"Failed to fetch user_location_view: {e}")
+        country_rows = []
+
+    now = datetime.now(timezone.utc)
+    for row in country_rows:
+        campaign = (
+            db.query(Campaign)
+            .filter(Campaign.platform_campaign_id == row["campaign_id"])
+            .first()
+        )
+        if not campaign:
+            continue
+        insight_date = (
+            date.fromisoformat(row["date"]) if isinstance(row["date"], str) else row["date"]
+        )
+        country = row.get("country")
+        if not country:
+            continue
+        existing = (
+            db.query(AdCountryMetric)
+            .filter(
+                AdCountryMetric.campaign_id == campaign.id,
+                AdCountryMetric.ad_id.is_(None),
+                AdCountryMetric.date == insight_date,
+                AdCountryMetric.country == country,
+            )
+            .first()
+        )
+        values = {
+            "spend": row.get("spend") or 0,
+            "impressions": row.get("impressions") or 0,
+            "clicks": row.get("clicks") or 0,
+            "revenue_website": row.get("revenue_website") or 0,
+            "revenue_offline": row.get("revenue_offline") or 0,
+            "conversions_website": row.get("conversions") or 0,
+            "conversions_offline": 0,
+        }
+        if existing:
+            for k, v in values.items():
+                setattr(existing, k, v)
+            existing.updated_at = now
+        else:
+            db.add(AdCountryMetric(
+                platform="google",
+                campaign_id=campaign.id,
+                ad_id=None,
+                date=insight_date,
+                country=country,
+                **values,
+            ))
+        summary["ad_country_rows"] += 1
+    db.commit()
+    return summary
+
+
+def sync_google_account(
+    db: Session,
+    account: AdAccount,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> dict:
     """Sync campaigns, ad groups, ads, asset groups, assets, and metrics
     for a single Google Ads account.
 
+    `date_from` / `date_to` override the default rolling window (last 10 days).
     Returns summary dict matching sync_meta_account format.
     """
     customer_id = account.account_id.replace("-", "")
@@ -393,185 +582,17 @@ def sync_google_account(db: Session, account: AdAccount) -> dict:
 
     db.flush()
 
-    # --- 6. Fetch and upsert campaign-level metrics ---
-    try:
-        raw_metrics = fetch_campaign_metrics(customer_id)
-    except Exception as e:
-        summary["errors"].append(f"Failed to fetch campaign metrics: {e}")
-        raw_metrics = []
+    # Default rolling window: last SYNC_LOOKBACK_DAYS including today.
+    if date_to is None:
+        date_to = date.today()
+    if date_from is None:
+        date_from = date_to - timedelta(days=SYNC_LOOKBACK_DAYS - 1)
 
-    for insight in raw_metrics:
-        campaign = (
-            db.query(Campaign)
-            .filter(Campaign.platform_campaign_id == insight["campaign_id"])
-            .first()
-        )
-        if not campaign:
-            continue
-
-        insight_date = (
-            date.fromisoformat(insight["date"])
-            if isinstance(insight["date"], str)
-            else insight["date"]
-        )
-        _upsert_google_metrics(db, campaign.id, insight, insight_date)
-        summary["metrics_synced"] += 1
-
-    # --- 7. Fetch and upsert ad-group-level metrics ---
-    try:
-        ag_metrics = fetch_ad_group_metrics(customer_id)
-    except Exception as e:
-        summary["errors"].append(f"Failed to fetch ad group metrics: {e}")
-        ag_metrics = []
-
-    for insight in ag_metrics:
-        adset = (
-            db.query(AdSet)
-            .filter(AdSet.platform_adset_id == insight["entity_id"])
-            .first()
-        )
-        if not adset:
-            continue
-
-        insight_date = (
-            date.fromisoformat(insight["date"])
-            if isinstance(insight["date"], str)
-            else insight["date"]
-        )
-        _upsert_google_metrics(
-            db, adset.campaign_id, insight, insight_date, ad_set_id=adset.id,
-        )
-        summary["metrics_synced"] += 1
-
-    # --- 8. Fetch and upsert ad-level metrics ---
-    try:
-        ad_metrics_data = fetch_ad_metrics(customer_id)
-    except Exception as e:
-        summary["errors"].append(f"Failed to fetch ad metrics: {e}")
-        ad_metrics_data = []
-
-    for insight in ad_metrics_data:
-        ad_obj = (
-            db.query(Ad)
-            .filter(Ad.platform_ad_id == insight["entity_id"])
-            .first()
-        )
-        if not ad_obj:
-            continue
-
-        insight_date = (
-            date.fromisoformat(insight["date"])
-            if isinstance(insight["date"], str)
-            else insight["date"]
-        )
-        _upsert_google_metrics(
-            db, ad_obj.campaign_id, insight, insight_date,
-            ad_set_id=ad_obj.ad_set_id, ad_id=ad_obj.id,
-        )
-        summary["metrics_synced"] += 1
-
-    # --- 9. Fetch and merge conversion action metrics (add_to_cart, checkouts) ---
-    try:
-        conv_action_data = fetch_conversion_action_metrics(customer_id)
-    except Exception as e:
-        summary["errors"].append(f"Failed to fetch conversion action metrics: {e}")
-        conv_action_data = []
-
-    for row in conv_action_data:
-        campaign = (
-            db.query(Campaign)
-            .filter(Campaign.platform_campaign_id == row["campaign_id"])
-            .first()
-        )
-        if not campaign:
-            continue
-
-        insight_date = (
-            date.fromisoformat(row["date"])
-            if isinstance(row["date"], str)
-            else row["date"]
-        )
-
-        # Find the existing campaign-level metrics row for this date
-        existing = (
-            db.query(MetricsCache)
-            .filter(
-                MetricsCache.campaign_id == campaign.id,
-                MetricsCache.date == insight_date,
-                MetricsCache.ad_set_id.is_(None),
-                MetricsCache.ad_id.is_(None),
-            )
-            .first()
-        )
-        if existing:
-            current = getattr(existing, row["column"], 0) or 0
-            setattr(existing, row["column"], current + row["value"])
-
-    db.commit()
-
-    # --- Ad-country breakdown for Booking-from-Ads matcher (Google has no
-    #     ad-level user_location breakdown, so we keep this at campaign level).
-    try:
-        country_rows = fetch_campaign_user_country_metrics(customer_id, date_from, date_to)
-    except Exception as e:
-        summary["errors"].append(f"Failed to fetch user_location_view: {e}")
-        country_rows = []
-
-    ad_country_rows = 0
-    now = datetime.now(timezone.utc)
-    for row in country_rows:
-        campaign = (
-            db.query(Campaign)
-            .filter(Campaign.platform_campaign_id == row["campaign_id"])
-            .first()
-        )
-        if not campaign:
-            continue
-
-        insight_date = (
-            date.fromisoformat(row["date"])
-            if isinstance(row["date"], str)
-            else row["date"]
-        )
-        country = row.get("country")
-        if not country:
-            continue
-
-        existing = (
-            db.query(AdCountryMetric)
-            .filter(
-                AdCountryMetric.campaign_id == campaign.id,
-                AdCountryMetric.ad_id.is_(None),
-                AdCountryMetric.date == insight_date,
-                AdCountryMetric.country == country,
-            )
-            .first()
-        )
-        values = {
-            "spend": row.get("spend") or 0,
-            "impressions": row.get("impressions") or 0,
-            "clicks": row.get("clicks") or 0,
-            "revenue_website": row.get("revenue_website") or 0,
-            "revenue_offline": row.get("revenue_offline") or 0,
-            "conversions_website": row.get("conversions") or 0,
-            "conversions_offline": 0,
-        }
-        if existing:
-            for k, v in values.items():
-                setattr(existing, k, v)
-            existing.updated_at = now
-        else:
-            db.add(AdCountryMetric(
-                platform="google",
-                campaign_id=campaign.id,
-                ad_id=None,
-                date=insight_date,
-                country=country,
-                **values,
-            ))
-        ad_country_rows += 1
-    db.commit()
-    summary["ad_country_rows"] = ad_country_rows
+    window_summary = sync_google_metrics_window(db, account, date_from, date_to)
+    summary["metrics_synced"] = window_summary["metrics_synced"]
+    summary["ad_country_rows"] = window_summary["ad_country_rows"]
+    if window_summary["errors"]:
+        summary["errors"].extend(window_summary["errors"])
 
     logger.info(
         "Google sync complete for account %s: %d campaigns, %d ad groups, "

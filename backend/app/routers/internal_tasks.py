@@ -70,6 +70,79 @@ def _do_sync_all_platforms(db):
     sync_all_platforms(db)
 
 
+# Meta Marketing API insights paginate well up to ~90-day windows but get slow
+# and can hit per-call limits past that. 30 days is the safe chunk size.
+_BACKFILL_CHUNK_DAYS = 30
+
+
+def _do_sync_backfill(
+    db,
+    months_back: int = 12,
+    date_from_iso: str | None = None,
+    date_to_iso: str | None = None,
+):
+    """Re-pull historical metrics in chunked windows for every active account.
+
+    Step 1: run a regular sync once so entity tables (campaigns/ad sets/ads)
+    are current — historical metric upserts skip rows whose entity isn't in DB.
+
+    Step 2: walk the requested range backwards in 30-day chunks and call the
+    metrics-only window function for each chunk × each active account.
+    """
+    from app.models.account import AdAccount
+    from app.services.sync_engine import (
+        sync_all_platforms,
+        sync_meta_metrics_window,
+    )
+    from app.services.google_sync_engine import sync_google_metrics_window
+
+    # Resolve range
+    if date_to_iso:
+        end = date.fromisoformat(date_to_iso)
+    else:
+        end = date.today()
+    if date_from_iso:
+        start = date.fromisoformat(date_from_iso)
+    else:
+        start = end - timedelta(days=months_back * 30)
+
+    logger.info("[backfill] step 1: refreshing entities via sync_all_platforms")
+    sync_all_platforms(db)
+
+    accounts = db.query(AdAccount).filter(AdAccount.is_active.is_(True)).all()
+    logger.info(
+        "[backfill] step 2: chunked metrics pull from %s to %s for %d accounts",
+        start, end, len(accounts),
+    )
+
+    chunk_end = end
+    chunk_count = 0
+    while chunk_end >= start:
+        chunk_start = max(chunk_end - timedelta(days=_BACKFILL_CHUNK_DAYS - 1), start)
+        chunk_count += 1
+        for account in accounts:
+            try:
+                if account.platform == "meta":
+                    res = sync_meta_metrics_window(db, account, chunk_start, chunk_end)
+                elif account.platform == "google":
+                    res = sync_google_metrics_window(db, account, chunk_start, chunk_end)
+                else:
+                    continue
+                logger.info(
+                    "[backfill] %s %s [%s..%s] metrics=%d country=%d errs=%d",
+                    account.platform, account.account_name, chunk_start, chunk_end,
+                    res["metrics_synced"], res["ad_country_rows"], len(res["errors"]),
+                )
+            except Exception:
+                logger.exception(
+                    "[backfill] chunk failed account=%s window=%s..%s",
+                    account.account_name, chunk_start, chunk_end,
+                )
+        chunk_end = chunk_start - timedelta(days=1)
+
+    logger.info("[backfill] complete: %d chunks processed", chunk_count)
+
+
 def _do_daily_rule_cycle(db):
     from app.services.rule_engine import reenable_paused_ads
     from app.services.sync_engine import sync_all_platforms
@@ -100,6 +173,39 @@ def trigger_sync_all_platforms(
     _require_secret(x_internal_secret)
     _run_in_thread(_do_sync_all_platforms, "sync-all-platforms")
     return _api_response(data={"status": "started"})
+
+
+@router.post("/internal/tasks/sync-backfill", status_code=202)
+def trigger_sync_backfill(
+    x_internal_secret: str | None = Header(default=None),
+    months_back: int = 12,
+    date_from: str | None = None,
+    date_to: str | None = None,
+):
+    """One-shot historical backfill of metrics + ad×country for every active
+    Meta + Google account. Walks backwards in 30-day chunks.
+
+    Defaults to last 12 months. Pass `date_from=YYYY-MM-DD&date_to=YYYY-MM-DD`
+    to override. Runs async in a thread; expect 5-30 min depending on account
+    count and chunk size.
+    """
+    _require_secret(x_internal_secret)
+    if months_back <= 0 or months_back > 37:
+        raise HTTPException(status_code=400, detail="months_back must be 1..37 (Meta API max)")
+    _run_in_thread(
+        _do_sync_backfill,
+        "sync-backfill",
+        months_back=months_back,
+        date_from_iso=date_from,
+        date_to_iso=date_to,
+    )
+    return _api_response(data={
+        "status": "started",
+        "months_back": months_back,
+        "date_from": date_from,
+        "date_to": date_to,
+        "chunk_days": _BACKFILL_CHUNK_DAYS,
+    })
 
 
 @router.post("/internal/tasks/daily-rule-cycle", status_code=202)
