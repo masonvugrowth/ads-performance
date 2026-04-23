@@ -63,6 +63,9 @@ def _upsert_google_metrics(
     existing = q.first()
     now = datetime.now(timezone.utc)
 
+    # Defensive cap on CTR (edge cases where clicks > impressions).
+    raw_ctr = insight.get("ctr") or 0
+    safe_ctr = min(float(raw_ctr), 99.999999) if raw_ctr else 0
     metric_fields = {
         "spend": insight["spend"],
         "impressions": insight["impressions"],
@@ -72,7 +75,7 @@ def _upsert_google_metrics(
         # into link_clicks so the landing-page rollup reads the same column
         # regardless of source platform.
         "link_clicks": insight["clicks"],
-        "ctr": insight["ctr"],
+        "ctr": safe_ctr,
         "conversions": insight["conversions"],
         "revenue": insight["revenue"],
         "roas": insight["roas"],

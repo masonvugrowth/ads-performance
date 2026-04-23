@@ -57,12 +57,16 @@ def _upsert_metrics_row(
     existing = q.first()
     now = datetime.now(timezone.utc)
 
+    # Defensive cap on CTR (Meta occasionally returns >100 due to tracking lag).
+    # Column is NUMERIC(8,6) with max absolute value < 100.
+    raw_ctr = insight.get("ctr") or 0
+    safe_ctr = min(float(raw_ctr), 99.999999) if raw_ctr else 0
     metric_fields = {
         "spend": insight["spend"],
         "impressions": insight["impressions"],
         "clicks": insight["clicks"],
         "link_clicks": insight.get("link_clicks", 0),
-        "ctr": insight["ctr"],
+        "ctr": safe_ctr,
         "conversions": insight["conversions"],
         "revenue": insight["revenue"],
         "revenue_website": insight.get("revenue_website", insight["revenue"]),

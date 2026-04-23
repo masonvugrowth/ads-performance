@@ -386,6 +386,14 @@ def _parse_insights_rows(rows, entity_id_key: str) -> list[dict]:
         link_clicks = int(row.get("inline_link_clicks", 0) or 0)
         revenue = revenue_website  # legacy column tracks website pixel value
 
+        # Meta CTR is returned as a percentage number (e.g. 5.93 = 5.93%). Very
+        # occasionally it exceeds 100 due to delayed click tracking or tiny-
+        # impression edge cases. Our column is NUMERIC(8,6) with 2 integer
+        # digits, so we cap at 99.999999 to avoid overflow crashes. The cap is
+        # only ever hit on statistically irrelevant rows.
+        raw_ctr = float(row.get("ctr", 0) or 0)
+        safe_ctr = min(raw_ctr, 99.999999)
+
         result = {
             "entity_id": row.get(entity_id_key),
             "campaign_id": row.get("campaign_id"),
@@ -394,7 +402,7 @@ def _parse_insights_rows(rows, entity_id_key: str) -> list[dict]:
             "impressions": impressions,
             "clicks": clicks,
             "link_clicks": link_clicks,
-            "ctr": float(row.get("ctr", 0)),
+            "ctr": safe_ctr,
             "conversions": conversions,
             "conversions_offline": conversions_offline,
             "revenue": revenue,
