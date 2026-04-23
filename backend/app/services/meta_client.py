@@ -68,7 +68,30 @@ INSIGHT_FIELDS = [
     "frequency",
     "actions",
     "action_values",
+    # Video engagement funnel — Meta returns each as a [{action_type, value}] list.
+    "video_play_actions",
+    "video_3_sec_watched_actions",
+    "video_thruplay_watched_actions",
+    "video_p25_watched_actions",
+    "video_p50_watched_actions",
+    "video_p75_watched_actions",
+    "video_p100_watched_actions",
 ]
+
+
+def _first_action_value(arr) -> int:
+    """Pull first integer value from Meta's [{'action_type':..., 'value':...}] list.
+
+    Video metrics are returned as arrays keyed by post/video id. Summing them
+    would double-count across overlapping creatives; Meta's own UI takes the
+    first bucket, so we do the same.
+    """
+    if not arr:
+        return 0
+    try:
+        return int(arr[0].get("value", 0))
+    except (KeyError, ValueError, TypeError):
+        return 0
 
 
 def _parse_date(value) -> date | None:
@@ -245,6 +268,13 @@ def fetch_campaign_insights(
                 "searches": searches,
                 "leads": leads,
                 "landing_page_views": landing_page_views,
+                "video_views": _first_action_value(row.get("video_play_actions")),
+                "video_3s_views": _first_action_value(row.get("video_3_sec_watched_actions")),
+                "video_thru_plays": _first_action_value(row.get("video_thruplay_watched_actions")),
+                "video_p25_views": _first_action_value(row.get("video_p25_watched_actions")),
+                "video_p50_views": _first_action_value(row.get("video_p50_watched_actions")),
+                "video_p75_views": _first_action_value(row.get("video_p75_watched_actions")),
+                "video_p100_views": _first_action_value(row.get("video_p100_watched_actions")),
             })
 
         logger.info(
@@ -417,6 +447,13 @@ def _parse_insights_rows(rows, entity_id_key: str) -> list[dict]:
             "searches": searches,
             "leads": leads,
             "landing_page_views": landing_page_views,
+            "video_views": _first_action_value(row.get("video_play_actions")),
+            "video_3s_views": _first_action_value(row.get("video_3_sec_watched_actions")),
+            "video_thru_plays": _first_action_value(row.get("video_thruplay_watched_actions")),
+            "video_p25_views": _first_action_value(row.get("video_p25_watched_actions")),
+            "video_p50_views": _first_action_value(row.get("video_p50_watched_actions")),
+            "video_p75_views": _first_action_value(row.get("video_p75_watched_actions")),
+            "video_p100_views": _first_action_value(row.get("video_p100_watched_actions")),
         }
         if "adset_id" in row:
             result["adset_id"] = row["adset_id"]

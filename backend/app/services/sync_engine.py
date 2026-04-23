@@ -80,6 +80,13 @@ def _upsert_metrics_row(
         "searches": insight.get("searches", 0),
         "leads": insight.get("leads", 0),
         "landing_page_views": insight.get("landing_page_views", 0),
+        "video_views": insight.get("video_views", 0),
+        "video_3s_views": insight.get("video_3s_views", 0),
+        "video_thru_plays": insight.get("video_thru_plays", 0),
+        "video_p25_views": insight.get("video_p25_views", 0),
+        "video_p50_views": insight.get("video_p50_views", 0),
+        "video_p75_views": insight.get("video_p75_views", 0),
+        "video_p100_views": insight.get("video_p100_views", 0),
         "computed_at": now,
     }
 

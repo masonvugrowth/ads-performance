@@ -467,6 +467,75 @@ def export_ads(
         return _api_response(error=str(e))
 
 
+@router.get("/export/ads/metrics")
+def export_ad_metrics(
+    date_from: str = Query(..., description="ISO date YYYY-MM-DD"),
+    date_to: str = Query(..., description="ISO date YYYY-MM-DD"),
+    platform: str = Query(None, description="meta | google | tiktok"),
+    api_key: ApiKey = Depends(validate_api_key),
+    db: Session = Depends(get_db),
+):
+    """Per-ad_id aggregated metrics for a date window (ad-level rows only).
+
+    Sums every metrics_cache row where ad_id IS NOT NULL across the date range.
+    Video fields (views, 3s, thruplay, p25/p50/p75/p100) are 0 for non-video
+    creatives and for platforms other than Meta (Google/TikTok sync doesn't
+    populate them yet).
+    """
+    try:
+        df = date.fromisoformat(date_from)
+        dt = date.fromisoformat(date_to)
+        if df > dt:
+            return _api_response(error="date_from must be <= date_to")
+
+        q = db.query(
+            MetricsCache.ad_id.label("ad_id"),
+            MetricsCache.platform.label("platform"),
+            func.sum(MetricsCache.spend).label("spend"),
+            func.sum(MetricsCache.impressions).label("impressions"),
+            func.sum(MetricsCache.clicks).label("clicks"),
+            func.sum(MetricsCache.conversions).label("conversions"),
+            func.sum(MetricsCache.revenue).label("revenue"),
+            func.sum(MetricsCache.video_views).label("video_views"),
+            func.sum(MetricsCache.video_3s_views).label("video_3s_views"),
+            func.sum(MetricsCache.video_thru_plays).label("video_thru_plays"),
+            func.sum(MetricsCache.video_p25_views).label("video_p25_views"),
+            func.sum(MetricsCache.video_p50_views).label("video_p50_views"),
+            func.sum(MetricsCache.video_p75_views).label("video_p75_views"),
+            func.sum(MetricsCache.video_p100_views).label("video_p100_views"),
+        ).filter(
+            MetricsCache.date >= df,
+            MetricsCache.date <= dt,
+            MetricsCache.ad_id.isnot(None),
+        )
+        if platform:
+            q = q.filter(MetricsCache.platform == platform)
+
+        rows = q.group_by(MetricsCache.ad_id, MetricsCache.platform).all()
+
+        return _api_response(data=[
+            {
+                "ad_id": str(r.ad_id),
+                "platform": r.platform,
+                "spend": float(r.spend or 0),
+                "impressions": int(r.impressions or 0),
+                "clicks": int(r.clicks or 0),
+                "conversions": int(r.conversions or 0),
+                "revenue": float(r.revenue or 0),
+                "video_views": int(r.video_views or 0),
+                "video_3s_views": int(r.video_3s_views or 0),
+                "video_thru_plays": int(r.video_thru_plays or 0),
+                "video_p25_views": int(r.video_p25_views or 0),
+                "video_p50_views": int(r.video_p50_views or 0),
+                "video_p75_views": int(r.video_p75_views or 0),
+                "video_p100_views": int(r.video_p100_views or 0),
+            }
+            for r in rows
+        ])
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
 @router.get("/export/countries")
 def export_countries(
     date_from: str = Query(..., description="ISO date"),

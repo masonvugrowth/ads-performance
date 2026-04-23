@@ -49,4 +49,15 @@ class MetricsCache(TimestampMixin, Base):
     searches = Column(Integer, nullable=False, default=0)
     leads = Column(Integer, nullable=False, default=0)
     landing_page_views = Column(Integer, nullable=False, default=0)
+    # Video engagement funnel (Meta only; Google/TikTok fills NULL or 0).
+    # video_views = video_play_actions (plays triggered by an impression, Meta's
+    # hook-stage counter). video_3s_views = 3s+ watchers. video_thru_plays =
+    # thruplay (≥15s or full for short videos). p25/p50/p75/p100 = % watched.
+    video_views = Column(Integer, nullable=False, default=0)
+    video_3s_views = Column(Integer, nullable=False, default=0)
+    video_thru_plays = Column(Integer, nullable=False, default=0)
+    video_p25_views = Column(Integer, nullable=False, default=0)
+    video_p50_views = Column(Integer, nullable=False, default=0)
+    video_p75_views = Column(Integer, nullable=False, default=0)
+    video_p100_views = Column(Integer, nullable=False, default=0)
     computed_at = Column(DateTime(timezone=True), nullable=True)
