@@ -13,7 +13,7 @@ from app.models.account import AdAccount
 from app.models.campaign import Campaign
 from app.models.metrics import MetricsCache
 from app.models.user import User
-from app.routers.accounts import get_account_ids_for_branches
+from app.routers.accounts import BRANCH_ACCOUNT_MAP, BRANCH_CURRENCY, get_account_ids_for_branches
 
 router = APIRouter()
 
@@ -641,5 +641,89 @@ def get_dashboard_funnel(
             "period": {"from": date_from.isoformat(), "to": date_to.isoformat()},
             "prev_period": {"from": prev_from.isoformat(), "to": prev_to.isoformat()},
         })
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
+@router.get("/dashboard/by-branch")
+def get_dashboard_by_branch(
+    date_from: date | None = None,
+    date_to: date | None = None,
+    platform: str | None = None,
+    branches: str | None = None,
+    current_user: User = Depends(require_section("analytics")),
+    db: Session = Depends(get_db),
+):
+    """Metrics broken down by branch (spend VND-normalized) for pie charts."""
+    try:
+        branch_list = [b.strip() for b in branches.split(",") if b.strip()] if branches else None
+        ok, scoped_ids, err = scoped_account_ids(
+            db, current_user, "analytics", requested_branches=branch_list
+        )
+        if not ok:
+            return _api_response(error=err)
+        branch_account_ids = scoped_ids
+
+        q = db.query(
+            Campaign.account_id,
+            func.sum(MetricsCache.spend).label("spend"),
+            func.sum(MetricsCache.conversions).label("conversions"),
+            func.sum(MetricsCache.revenue).label("revenue"),
+        ).join(Campaign, MetricsCache.campaign_id == Campaign.id)
+
+        # Campaign-level only — exclude adset/ad rows to prevent triple counting
+        q = q.filter(MetricsCache.ad_set_id.is_(None), MetricsCache.ad_id.is_(None))
+        if date_from:
+            q = q.filter(MetricsCache.date >= date_from)
+        if date_to:
+            q = q.filter(MetricsCache.date <= date_to)
+        if platform:
+            q = q.filter(MetricsCache.platform == platform)
+        if branch_account_ids:
+            q = q.filter(Campaign.account_id.in_(branch_account_ids))
+
+        rows = q.group_by(Campaign.account_id).all()
+
+        account_ids = [r.account_id for r in rows]
+        accounts_map = {}
+        if account_ids:
+            accs = db.query(AdAccount).filter(AdAccount.id.in_(account_ids)).all()
+            accounts_map = {a.id: a for a in accs}
+
+        # Map each account → branch by matching account_name substring
+        def match_branch(name: str) -> str | None:
+            nlow = (name or "").lower()
+            for br, patterns in BRANCH_ACCOUNT_MAP.items():
+                for p in patterns:
+                    if p.lower() in nlow:
+                        return br
+            return None
+
+        aggregates: dict[str, dict] = {}
+        for r in rows:
+            acc = accounts_map.get(r.account_id)
+            if not acc:
+                continue
+            branch = match_branch(acc.account_name)
+            if not branch:
+                continue
+            fx = _get_fx_rate(acc.currency or "VND")
+            bucket = aggregates.setdefault(branch, {"spend_vnd": 0.0, "conversions": 0, "revenue_vnd": 0.0})
+            bucket["spend_vnd"] += float(r.spend or 0) * fx
+            bucket["conversions"] += int(r.conversions or 0)
+            bucket["revenue_vnd"] += float(r.revenue or 0) * fx
+
+        result = [
+            {
+                "branch": b,
+                "currency": BRANCH_CURRENCY.get(b, "VND"),
+                "spend_vnd": v["spend_vnd"],
+                "conversions": v["conversions"],
+                "revenue_vnd": v["revenue_vnd"],
+            }
+            for b, v in aggregates.items()
+        ]
+        result.sort(key=lambda x: x["spend_vnd"], reverse=True)
+        return _api_response(data=result)
     except Exception as e:
         return _api_response(error=str(e))

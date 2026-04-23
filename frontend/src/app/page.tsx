@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback, useRef } from 'react'
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, Legend,
+  PieChart, Pie, Cell,
 } from 'recharts'
 import { TrendingUp, TrendingDown, ChevronRight, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react'
 import { useSortableRows } from '@/lib/useSortableRows'
@@ -77,6 +78,14 @@ interface Branch {
   currency: string
 }
 
+interface BranchBreakdownRow {
+  branch: string
+  currency: string
+  spend_vnd: number
+  conversions: number
+  revenue_vnd: number
+}
+
 const CURRENCY_SYMBOLS: Record<string, string> = {
   VND: '₫', TWD: 'NT$', JPY: '¥', USD: '$',
 }
@@ -143,6 +152,7 @@ export default function DashboardPage() {
   const [kpis, setKpis] = useState<KPIs | null>(null)
   const [daily, setDaily] = useState<DailyRow[]>([])
   const [byAccount, setByAccount] = useState<AccountRow[]>([])
+  const [byBranch, setByBranch] = useState<BranchBreakdownRow[]>([])
   const [funnel, setFunnel] = useState<FunnelStep[]>([])
   const [accounts, setAccounts] = useState<Account[]>([])
   const [branches, setBranches] = useState<Branch[]>([])
@@ -182,12 +192,14 @@ export default function DashboardPage() {
       fetch(`${API_BASE}/api/dashboard/daily${qs}`, opts).then(r => r.json()),
       fetch(`${API_BASE}/api/dashboard/by-account?${dateParams}${branchParam}${platParam}`, opts).then(r => r.json()),
       fetch(`${API_BASE}/api/dashboard/funnel${qs}`, opts).then(r => r.json()),
+      fetch(`${API_BASE}/api/dashboard/by-branch?${dateParams}${platParam}`, opts).then(r => r.json()),
     ])
-      .then(([kpiRes, dailyRes, accountRes, funnelRes]) => {
+      .then(([kpiRes, dailyRes, accountRes, funnelRes, branchRes]) => {
         if (kpiRes.success) setKpis(kpiRes.data)
         if (dailyRes.success) setDaily(dailyRes.data)
         if (accountRes.success) setByAccount(accountRes.data)
         if (funnelRes.success) setFunnel(funnelRes.data.steps || [])
+        if (branchRes.success) setByBranch(branchRes.data)
       })
       .catch(() => {})
       .finally(() => setLoading(false))
@@ -447,8 +459,100 @@ export default function DashboardPage() {
         </div>
       </div>
 
+      {/* Branch breakdown pies */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+        <BranchPie
+          title="Branch by Cost (VND)"
+          rows={byBranch}
+          valueKey="spend_vnd"
+          selectedBranches={selectedBranches}
+          onToggle={toggleBranch}
+          valueFormatter={(v) => fmtMoney(v, 'VND')}
+        />
+        <BranchPie
+          title="Branch by Conversion"
+          rows={byBranch}
+          valueKey="conversions"
+          selectedBranches={selectedBranches}
+          onToggle={toggleBranch}
+          valueFormatter={(v) => fmtNum(v)}
+        />
+      </div>
+
       {/* Performance by Branch */}
       <PerformanceByBranchTable rows={byAccount} />
+    </div>
+  )
+}
+
+const PIE_COLORS = ['#a68a64', '#b8a7d9', '#a3c982', '#7dc4c2', '#eb7373', '#f4b971']
+
+function BranchPie({
+  title, rows, valueKey, selectedBranches, onToggle, valueFormatter,
+}: {
+  title: string
+  rows: BranchBreakdownRow[]
+  valueKey: 'spend_vnd' | 'conversions'
+  selectedBranches: string[]
+  onToggle: (name: string) => void
+  valueFormatter: (v: number) => string
+}) {
+  const data = rows
+    .map((r) => ({ name: r.branch, value: Number(r[valueKey]) || 0 }))
+    .filter((d) => d.value > 0)
+  const hasFilter = selectedBranches.length > 0
+  const total = data.reduce((s, d) => s + d.value, 0)
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 p-6">
+      <h2 className="text-sm font-semibold text-gray-700 mb-4">{title}</h2>
+      {data.length === 0 ? (
+        <p className="text-gray-400 text-sm text-center py-16">No data</p>
+      ) : (
+        <ResponsiveContainer width="100%" height={260}>
+          <PieChart>
+            <Pie
+              data={data}
+              dataKey="value"
+              nameKey="name"
+              cx="40%"
+              cy="50%"
+              outerRadius={95}
+              label={({ percent }) => `${((percent || 0) * 100).toFixed(1)}%`}
+              labelLine={false}
+              onClick={(d) => onToggle((d as { name: string }).name)}
+              cursor="pointer"
+            >
+              {data.map((entry, i) => {
+                const dim = hasFilter && !selectedBranches.includes(entry.name)
+                return (
+                  <Cell
+                    key={entry.name}
+                    fill={PIE_COLORS[i % PIE_COLORS.length]}
+                    fillOpacity={dim ? 0.3 : 1}
+                    stroke={selectedBranches.includes(entry.name) ? '#111827' : '#fff'}
+                    strokeWidth={selectedBranches.includes(entry.name) ? 2 : 1}
+                  />
+                )
+              })}
+            </Pie>
+            <Tooltip
+              formatter={(v: number) => [
+                `${valueFormatter(v)} (${total > 0 ? ((v / total) * 100).toFixed(1) : '0'}%)`,
+                '',
+              ]}
+            />
+            <Legend
+              layout="vertical"
+              verticalAlign="middle"
+              align="right"
+              iconType="circle"
+              wrapperStyle={{ fontSize: 12, cursor: 'pointer' }}
+              onClick={(e) => onToggle((e as { value: string }).value)}
+            />
+          </PieChart>
+        </ResponsiveContainer>
+      )}
     </div>
   )
 }
