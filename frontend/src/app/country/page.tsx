@@ -7,6 +7,15 @@ import { useSortableRows } from '@/lib/useSortableRows'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
+const CURRENCY_SYMBOLS: Record<string, string> = {
+  VND: '₫', TWD: 'NT$', JPY: '¥', USD: '$',
+}
+
+function fmtMoney(n: number, currency: string): string {
+  const symbol = CURRENCY_SYMBOLS[currency] || currency
+  return `${new Intl.NumberFormat('vi-VN', { maximumFractionDigits: 0 }).format(n)} ${symbol}`
+}
+
 type CountryOption = { code: string; name: string; adset_count: number }
 type Branch = { name: string; currency: string }
 
@@ -106,6 +115,7 @@ export default function CountryDashboard() {
   const [taData, setTaData] = useState<TaRow[]>([])
   const [funnelData, setFunnelData] = useState<FunnelStage[]>([])
   const [comparison, setComparison] = useState<CountryKpi[]>([])
+  const [responseCurrency, setResponseCurrency] = useState<string>('VND')
   const [periodInfo, setPeriodInfo] = useState<{ from: string; to: string; prev_from: string; prev_to: string } | null>(null)
   const [loading, setLoading] = useState(true)
 
@@ -182,6 +192,7 @@ export default function CountryDashboard() {
     ]).then(([kpi, comp, ta, funnel]) => {
       if (kpi.success && kpi.data) {
         setKpiData(kpi.data.items || [])
+        setResponseCurrency(kpi.data.currency || 'VND')
         if (kpi.data.period) {
           setPeriodInfo({
             from: kpi.data.period.from,
@@ -307,11 +318,11 @@ export default function CountryDashboard() {
           {selectedKpi && (
             <div className="grid grid-cols-2 lg:grid-cols-6 gap-4">
               {[
-                { label: 'Spend', value: fmt(selectedKpi.total_spend), change: country ? kpiData.find(k => k.country_code === country)?.spend_change : null, inverse: true },
-                { label: 'Revenue', value: fmt(selectedKpi.total_revenue), change: country ? kpiData.find(k => k.country_code === country)?.revenue_change : null, inverse: false },
+                { label: `Spend (${responseCurrency})`, value: fmtMoney(selectedKpi.total_spend, responseCurrency), change: country ? kpiData.find(k => k.country_code === country)?.spend_change : null, inverse: true },
+                { label: `Revenue (${responseCurrency})`, value: fmtMoney(selectedKpi.total_revenue, responseCurrency), change: country ? kpiData.find(k => k.country_code === country)?.revenue_change : null, inverse: false },
                 { label: 'ROAS', value: selectedKpi.total_spend ? (selectedKpi.total_revenue / selectedKpi.total_spend).toFixed(2) + 'x' : '0', change: country ? kpiData.find(k => k.country_code === country)?.roas_change : null, inverse: false },
                 { label: 'CTR', value: selectedKpi.impressions ? ((selectedKpi.clicks / selectedKpi.impressions) * 100).toFixed(1) + '%' : '0%', change: country ? kpiData.find(k => k.country_code === country)?.ctr_change : null, inverse: false },
-                { label: 'CPA', value: selectedKpi.conversions ? fmt(Math.round(selectedKpi.total_spend / selectedKpi.conversions)) : '--', change: null, inverse: true },
+                { label: `CPA (${responseCurrency})`, value: selectedKpi.conversions ? fmtMoney(Math.round(selectedKpi.total_spend / selectedKpi.conversions), responseCurrency) : '--', change: null, inverse: true },
                 { label: 'Campaigns', value: String(selectedKpi.campaign_count), change: null, inverse: false },
               ].map(kpi => (
                 <div key={kpi.label} className="bg-white rounded-xl border border-gray-200 p-5">
@@ -327,6 +338,7 @@ export default function CountryDashboard() {
           {country && taData.length > 0 && (
             <TaBreakdownTable
               rows={taData}
+              currency={responseCurrency}
               title={`TA Breakdown — ${countries.find(c => c.code === country)?.name || country}`}
             />
           )}
@@ -367,7 +379,7 @@ export default function CountryDashboard() {
           )}
 
           {/* Country Comparison Table */}
-          {comparison.length > 0 && <CountryComparisonTable rows={comparison} />}
+          {comparison.length > 0 && <CountryComparisonTable rows={comparison} currency={responseCurrency} />}
 
           {!loading && kpiData.length === 0 && (
             <div className="text-center py-12 text-gray-400">
@@ -406,7 +418,7 @@ function SortableTh<T extends Record<string, any>>({
   )
 }
 
-function TaBreakdownTable({ rows, title }: { rows: TaRow[]; title: string }) {
+function TaBreakdownTable({ rows, title, currency }: { rows: TaRow[]; title: string; currency: string }) {
   const { sorted, sortBy, sortDir, toggleSort } = useSortableRows<TaRow>(rows, 'roas', 'desc')
   return (
     <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
@@ -419,11 +431,11 @@ function TaBreakdownTable({ rows, title }: { rows: TaRow[]; title: string }) {
             <tr className="border-b border-gray-100">
               <SortableTh<TaRow> col="ta" label="TA" align="left" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
               <SortableTh<TaRow> col="funnel_stage" label="Funnel" align="left" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
-              <SortableTh<TaRow> col="spend" label="Spend" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
-              <SortableTh<TaRow> col="revenue" label="Revenue" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
+              <SortableTh<TaRow> col="spend" label={`Spend (${currency})`} sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
+              <SortableTh<TaRow> col="revenue" label={`Revenue (${currency})`} sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
               <SortableTh<TaRow> col="roas" label="ROAS" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
               <SortableTh<TaRow> col="ctr" label="CTR" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
-              <SortableTh<TaRow> col="cpa" label="CPA" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
+              <SortableTh<TaRow> col="cpa" label={`CPA (${currency})`} sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
               <SortableTh<TaRow> col="conversions" label="Conv" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
             </tr>
           </thead>
@@ -441,16 +453,16 @@ function TaBreakdownTable({ rows, title }: { rows: TaRow[]; title: string }) {
                   }`}>{row.funnel_stage}</span>
                 </td>
                 <td className="py-3 px-4 text-right">
-                  <div>{fmt(row.spend)}</div>
+                  <div>{fmtMoney(row.spend, currency)}</div>
                   <ChangeTag change={row.spend_change} inverseColor />
                 </td>
-                <td className="py-3 px-4 text-right">{fmt(row.revenue)}</td>
+                <td className="py-3 px-4 text-right">{fmtMoney(row.revenue, currency)}</td>
                 <td className="py-3 px-4 text-right">
                   <div className={`font-medium ${row.roas >= 1 ? 'text-green-600' : 'text-red-600'}`}>{row.roas.toFixed(2)}x</div>
                   <ChangeTag change={row.roas_change} />
                 </td>
                 <td className="py-3 px-4 text-right">{row.ctr.toFixed(1)}%</td>
-                <td className="py-3 px-4 text-right">{fmt(Math.round(row.cpa))}</td>
+                <td className="py-3 px-4 text-right">{fmtMoney(Math.round(row.cpa), currency)}</td>
                 <td className="py-3 px-4 text-right">
                   <div>{row.conversions}</div>
                   <ChangeTag change={row.conversions_change} />
@@ -464,7 +476,7 @@ function TaBreakdownTable({ rows, title }: { rows: TaRow[]; title: string }) {
   )
 }
 
-function CountryComparisonTable({ rows }: { rows: CountryKpi[] }) {
+function CountryComparisonTable({ rows, currency }: { rows: CountryKpi[]; currency: string }) {
   const { sorted, sortBy, sortDir, toggleSort } = useSortableRows<CountryKpi>(rows)
   return (
     <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
@@ -476,11 +488,11 @@ function CountryComparisonTable({ rows }: { rows: CountryKpi[] }) {
           <thead>
             <tr className="border-b border-gray-100">
               <SortableTh<CountryKpi> col="country" label="Country" align="left" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
-              <SortableTh<CountryKpi> col="total_spend" label="Spend" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
-              <SortableTh<CountryKpi> col="total_revenue" label="Revenue" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
+              <SortableTh<CountryKpi> col="total_spend" label={`Spend (${currency})`} sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
+              <SortableTh<CountryKpi> col="total_revenue" label={`Revenue (${currency})`} sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
               <SortableTh<CountryKpi> col="roas" label="ROAS" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
               <SortableTh<CountryKpi> col="ctr" label="CTR" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
-              <SortableTh<CountryKpi> col="cpa" label="CPA" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
+              <SortableTh<CountryKpi> col="cpa" label={`CPA (${currency})`} sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
               <SortableTh<CountryKpi> col="conversions" label="Conversions" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
             </tr>
           </thead>
@@ -492,16 +504,16 @@ function CountryComparisonTable({ rows }: { rows: CountryKpi[] }) {
                   <span className="text-xs text-gray-400 ml-1">({row.country_code})</span>
                 </td>
                 <td className="py-3 px-4 text-right">
-                  <div>{fmt(row.total_spend)}</div>
+                  <div>{fmtMoney(row.total_spend, currency)}</div>
                   <ChangeTag change={row.spend_change} inverseColor />
                 </td>
-                <td className="py-3 px-4 text-right">{fmt(row.total_revenue)}</td>
+                <td className="py-3 px-4 text-right">{fmtMoney(row.total_revenue, currency)}</td>
                 <td className="py-3 px-4 text-right">
                   <div className={`font-medium ${row.roas >= 1 ? 'text-green-600' : 'text-red-600'}`}>{row.roas.toFixed(2)}x</div>
                   <ChangeTag change={row.roas_change} />
                 </td>
                 <td className="py-3 px-4 text-right">{row.ctr.toFixed(1)}%</td>
-                <td className="py-3 px-4 text-right">{fmt(Math.round(row.cpa))}</td>
+                <td className="py-3 px-4 text-right">{fmtMoney(Math.round(row.cpa), currency)}</td>
                 <td className="py-3 px-4 text-right">
                   <div>{row.conversions}</div>
                   <ChangeTag change={row.conversions_change} />

@@ -24,6 +24,39 @@ from app.services.country_utils import (
 router = APIRouter()
 
 
+# Exchange rates to VND (kept in sync with campaigns.py).
+FX_TO_VND = {
+    "VND": 1,
+    "TWD": 800,
+    "JPY": 170,
+    "USD": 25500,
+}
+
+
+def _fx(currency: str) -> float:
+    return FX_TO_VND.get(currency or "VND", 1)
+
+
+def _resolve_currency(db: Session, account_id, scoped_ids):
+    """Return (display_currency, convert_to_vnd).
+
+    - Single account filter: that account's currency, no FX conversion.
+    - Scoped list with exactly one currency: use it, no FX conversion.
+    - Otherwise (admin all-branches, or mixed currencies): VND, convert.
+    """
+    if account_id:
+        acc = db.query(AdAccount).filter(AdAccount.id == account_id).first()
+        return (acc.currency if acc and acc.currency else "VND"), False
+    if scoped_ids:
+        rows = db.query(AdAccount.currency).filter(
+            AdAccount.id.in_(scoped_ids or ["__no_match__"])
+        ).distinct().all()
+        currencies = {r[0] for r in rows if r[0]}
+        if len(currencies) == 1:
+            return currencies.pop(), False
+    return "VND", True
+
+
 def _api_response(data=None, error=None):
     return {
         "success": error is None,
@@ -85,10 +118,12 @@ def _resolve_scope(db, user, account_id, branches=None):
 
 
 def _base_metrics_query(db: Session):
-    """Base query joining metrics → campaign → adset."""
+    """Base query joining metrics → campaign → adset → account, grouped per (country, account)."""
     return (
         db.query(
             AdSet.country,
+            Campaign.account_id.label("account_id"),
+            AdAccount.currency.label("currency"),
             func.sum(MetricsCache.spend).label("total_spend"),
             func.sum(MetricsCache.impressions).label("total_impressions"),
             func.sum(MetricsCache.clicks).label("total_clicks"),
@@ -97,29 +132,43 @@ def _base_metrics_query(db: Session):
             func.count(func.distinct(Campaign.id)).label("campaign_count"),
         )
         .join(Campaign, Campaign.id == MetricsCache.campaign_id)
+        .join(AdAccount, AdAccount.id == Campaign.account_id)
         .join(AdSet, AdSet.id == MetricsCache.ad_set_id)
     )
 
 
-def _row_to_kpi(row) -> dict:
-    spend = float(row.total_spend or 0)
-    revenue = float(row.total_revenue or 0)
-    impressions = int(row.total_impressions or 0)
-    clicks = int(row.total_clicks or 0)
-    conversions = int(row.total_conversions or 0)
-    return {
-        "country_code": row.country,
-        "country": country_name(row.country) or row.country,
-        "total_spend": spend,
-        "total_revenue": revenue,
-        "roas": round(revenue / spend, 2) if spend > 0 else 0,
-        "ctr": round((clicks / impressions) * 100, 2) if impressions > 0 else 0,
-        "cpa": round(spend / conversions, 2) if conversions > 0 else 0,
-        "impressions": impressions,
-        "clicks": clicks,
-        "conversions": conversions,
-        "campaign_count": getattr(row, "campaign_count", 0),
-    }
+def _aggregate_country_rows(rows, convert_to_vnd: bool) -> dict:
+    """Merge per-(country, account) rows into per-country dicts, applying FX if needed."""
+    agg: dict[str, dict] = {}
+    for row in rows:
+        code = row.country
+        cur = agg.setdefault(code, {
+            "country_code": code,
+            "country": country_name(code) or code,
+            "total_spend": 0.0,
+            "total_revenue": 0.0,
+            "impressions": 0,
+            "clicks": 0,
+            "conversions": 0,
+            "campaign_count": 0,
+        })
+        fx = _fx(row.currency) if convert_to_vnd else 1
+        cur["total_spend"] += float(row.total_spend or 0) * fx
+        cur["total_revenue"] += float(row.total_revenue or 0) * fx
+        cur["impressions"] += int(row.total_impressions or 0)
+        cur["clicks"] += int(row.total_clicks or 0)
+        cur["conversions"] += int(row.total_conversions or 0)
+        cur["campaign_count"] += int(getattr(row, "campaign_count", 0) or 0)
+
+    for cur in agg.values():
+        spend = cur["total_spend"]
+        revenue = cur["total_revenue"]
+        imp = cur["impressions"]
+        conv = cur["conversions"]
+        cur["roas"] = round(revenue / spend, 2) if spend > 0 else 0
+        cur["ctr"] = round((cur["clicks"] / imp) * 100, 2) if imp > 0 else 0
+        cur["cpa"] = round(spend / conv, 2) if conv > 0 else 0
+    return agg
 
 
 @router.get("/dashboard/country")
@@ -140,6 +189,8 @@ def country_kpi_summary(
         if err:
             return _api_response(error=err)
 
+        display_currency, convert_to_vnd = _resolve_currency(db, account_id, scoped_ids)
+
         # Default date range
         if not date_from or not date_to:
             df, dt = _default_date_range()
@@ -153,23 +204,22 @@ def country_kpi_summary(
         # Current period
         q = _base_metrics_query(db)
         q = _apply_common_filters(q, country, platform, df, dt, funnel_stage, account_id, scoped_ids)
-        rows = q.group_by(AdSet.country).all()
+        rows = q.group_by(AdSet.country, Campaign.account_id, AdAccount.currency).all()
 
         # Previous period
         q_prev = _base_metrics_query(db)
         q_prev = _apply_common_filters(q_prev, country, platform, prev_from, prev_to, funnel_stage, account_id, scoped_ids)
-        prev_rows = q_prev.group_by(AdSet.country).all()
-        prev_map = {r.country: r for r in prev_rows}
+        prev_rows = q_prev.group_by(AdSet.country, Campaign.account_id, AdAccount.currency).all()
+
+        curr_by_country = _aggregate_country_rows(rows, convert_to_vnd)
+        prev_by_country = _aggregate_country_rows(prev_rows, convert_to_vnd)
 
         items = []
-        for row in rows:
-            if not is_valid_country(row.country):
+        for code, kpi in curr_by_country.items():
+            if not is_valid_country(code):
                 continue
-            kpi = _row_to_kpi(row)
-            # Add change vs previous period
-            prev = prev_map.get(row.country)
-            if prev:
-                prev_kpi = _row_to_kpi(prev)
+            prev_kpi = prev_by_country.get(code)
+            if prev_kpi:
                 kpi["spend_change"] = calc_change(kpi["total_spend"], prev_kpi["total_spend"])
                 kpi["revenue_change"] = calc_change(kpi["total_revenue"], prev_kpi["total_revenue"])
                 kpi["roas_change"] = calc_change(kpi["roas"], prev_kpi["roas"])
@@ -185,6 +235,7 @@ def country_kpi_summary(
 
         return _api_response(data={
             "items": items,
+            "currency": display_currency,
             "period": {"from": date_from, "to": date_to},
             "prev_period": {"from": prev_from.isoformat(), "to": prev_to.isoformat()},
         })
@@ -209,6 +260,8 @@ def ta_breakdown(
         if err:
             return _api_response(error=err)
 
+        _, convert_to_vnd = _resolve_currency(db, account_id, scoped_ids)
+
         if not date_from or not date_to:
             df, dt = _default_date_range()
             date_from = date_from or df.isoformat()
@@ -223,6 +276,7 @@ def ta_breakdown(
                 db.query(
                     Campaign.ta,
                     Campaign.funnel_stage,
+                    AdAccount.currency.label("currency"),
                     func.sum(MetricsCache.spend).label("spend"),
                     func.sum(MetricsCache.impressions).label("impressions"),
                     func.sum(MetricsCache.clicks).label("clicks"),
@@ -230,6 +284,7 @@ def ta_breakdown(
                     func.sum(MetricsCache.revenue).label("revenue"),
                 )
                 .join(Campaign, Campaign.id == MetricsCache.campaign_id)
+                .join(AdAccount, AdAccount.id == Campaign.account_id)
                 .join(AdSet, AdSet.id == MetricsCache.ad_set_id)
                 .filter(MetricsCache.ad_id.is_(None))
                 .filter(AdSet.country == country.upper())
@@ -241,24 +296,40 @@ def ta_breakdown(
                 q = q.filter(Campaign.account_id == account_id)
             elif scoped_ids is not None:
                 q = q.filter(Campaign.account_id.in_(scoped_ids or ["__no_match__"]))
-            return q.group_by(Campaign.ta, Campaign.funnel_stage).all()
+            return q.group_by(Campaign.ta, Campaign.funnel_stage, AdAccount.currency).all()
 
-        rows = _query_ta(df, dt)
-        prev_rows = _query_ta(prev_from, prev_to)
-        prev_map = {(r.ta, r.funnel_stage): r for r in prev_rows}
+        def _aggregate(rows):
+            agg: dict[tuple[str, str], dict] = {}
+            for r in rows:
+                key = (r.ta, r.funnel_stage)
+                cur = agg.setdefault(key, {
+                    "ta": r.ta, "funnel_stage": r.funnel_stage,
+                    "spend": 0.0, "revenue": 0.0,
+                    "impressions": 0, "clicks": 0, "conversions": 0,
+                })
+                fx = _fx(r.currency) if convert_to_vnd else 1
+                cur["spend"] += float(r.spend or 0) * fx
+                cur["revenue"] += float(r.revenue or 0) * fx
+                cur["impressions"] += int(r.impressions or 0)
+                cur["clicks"] += int(r.clicks or 0)
+                cur["conversions"] += int(r.conversions or 0)
+            return agg
+
+        curr = _aggregate(_query_ta(df, dt))
+        prev = _aggregate(_query_ta(prev_from, prev_to))
 
         items = []
-        for row in rows:
-            spend = float(row.spend or 0)
-            revenue = float(row.revenue or 0)
-            impressions = int(row.impressions or 0)
-            clicks = int(row.clicks or 0)
-            conversions = int(row.conversions or 0)
+        for key, cur in curr.items():
+            spend = cur["spend"]
+            revenue = cur["revenue"]
+            impressions = cur["impressions"]
+            clicks = cur["clicks"]
+            conversions = cur["conversions"]
             roas = round(revenue / spend, 2) if spend > 0 else 0
 
             item = {
-                "ta": row.ta,
-                "funnel_stage": row.funnel_stage,
+                "ta": cur["ta"],
+                "funnel_stage": cur["funnel_stage"],
                 "spend": spend,
                 "revenue": revenue,
                 "roas": roas,
@@ -267,17 +338,15 @@ def ta_breakdown(
                 "impressions": impressions,
                 "clicks": clicks,
                 "conversions": conversions,
-                "is_remarketing": row.funnel_stage == "MOF",
+                "is_remarketing": cur["funnel_stage"] == "MOF",
             }
 
-            prev = prev_map.get((row.ta, row.funnel_stage))
-            if prev:
-                prev_spend = float(prev.spend or 0)
-                prev_revenue = float(prev.revenue or 0)
-                prev_roas = round(prev_revenue / prev_spend, 2) if prev_spend > 0 else 0
-                item["spend_change"] = calc_change(spend, prev_spend)
+            p = prev.get(key)
+            if p:
+                prev_roas = round(p["revenue"] / p["spend"], 2) if p["spend"] > 0 else 0
+                item["spend_change"] = calc_change(spend, p["spend"])
                 item["roas_change"] = calc_change(roas, prev_roas)
-                item["conversions_change"] = calc_change(conversions, int(prev.conversions or 0))
+                item["conversions_change"] = calc_change(conversions, p["conversions"])
             else:
                 item["spend_change"] = None
                 item["roas_change"] = None
@@ -392,6 +461,8 @@ def country_comparison(
         if err:
             return _api_response(error=err)
 
+        display_currency, convert_to_vnd = _resolve_currency(db, account_id, scoped_ids)
+
         if not date_from or not date_to:
             df, dt = _default_date_range()
             date_from = date_from or df.isoformat()
@@ -407,6 +478,7 @@ def country_comparison(
                 func.length(AdSet.country) == 2,
                 MetricsCache.date >= d_from,
                 MetricsCache.date <= d_to,
+                MetricsCache.ad_id.is_(None),
             )
             if platform:
                 q = q.filter(MetricsCache.platform == platform)
@@ -416,20 +488,26 @@ def country_comparison(
                 q = q.filter(Campaign.account_id == account_id)
             elif scoped_ids is not None:
                 q = q.filter(Campaign.account_id.in_(scoped_ids or ["__no_match__"]))
-            return q.group_by(AdSet.country).order_by(func.sum(MetricsCache.spend).desc()).all()
+            return q.group_by(AdSet.country, Campaign.account_id, AdAccount.currency).all()
 
         rows = _query_countries(df, dt)
         prev_rows = _query_countries(prev_from, prev_to)
-        prev_map = {r.country: r for r in prev_rows}
+
+        curr_by_country = _aggregate_country_rows(rows, convert_to_vnd)
+        prev_by_country = _aggregate_country_rows(prev_rows, convert_to_vnd)
+
+        ordered = sorted(
+            curr_by_country.values(),
+            key=lambda k: k["total_spend"],
+            reverse=True,
+        )
 
         items = []
-        for row in rows:
-            if not is_valid_country(row.country):
+        for kpi in ordered:
+            if not is_valid_country(kpi["country_code"]):
                 continue
-            kpi = _row_to_kpi(row)
-            prev = prev_map.get(row.country)
-            if prev:
-                prev_kpi = _row_to_kpi(prev)
+            prev_kpi = prev_by_country.get(kpi["country_code"])
+            if prev_kpi:
                 kpi["spend_change"] = calc_change(kpi["total_spend"], prev_kpi["total_spend"])
                 kpi["roas_change"] = calc_change(kpi["roas"], prev_kpi["roas"])
                 kpi["conversions_change"] = calc_change(kpi["conversions"], prev_kpi["conversions"])
@@ -439,6 +517,9 @@ def country_comparison(
                 kpi["conversions_change"] = None
             items.append(kpi)
 
+        # Kept as a plain array for frontend compatibility; display_currency is
+        # exposed via /dashboard/country instead.
+        _ = display_currency
         return _api_response(data=items)
     except Exception as e:
         return _api_response(error=str(e))
