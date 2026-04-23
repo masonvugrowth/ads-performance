@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { TrendingUp, TrendingDown, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react'
 import { apiFetch } from '@/lib/api'
 import { useSortableRows } from '@/lib/useSortableRows'
@@ -8,7 +8,7 @@ import { useSortableRows } from '@/lib/useSortableRows'
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
 type CountryOption = { code: string; name: string; adset_count: number }
-type Account = { id: string; account_name: string; currency: string }
+type Branch = { name: string; currency: string }
 
 type CountryKpi = {
   country_code: string
@@ -96,11 +96,12 @@ export default function CountryDashboard() {
   const [country, setCountry] = useState('')
   const [platform, setPlatform] = useState('')
   const [funnelStage, setFunnelStage] = useState('')
-  const [selectedAccount, setSelectedAccount] = useState('')
+  const [selectedBranches, setSelectedBranches] = useState<string[]>([])
+  const [branchDropdownOpen, setBranchDropdownOpen] = useState(false)
   const [datePreset, setDatePreset] = useState('7d')
 
   const [countries, setCountries] = useState<CountryOption[]>([])
-  const [accounts, setAccounts] = useState<Account[]>([])
+  const [branches, setBranches] = useState<Branch[]>([])
   const [kpiData, setKpiData] = useState<CountryKpi[]>([])
   const [taData, setTaData] = useState<TaRow[]>([])
   const [funnelData, setFunnelData] = useState<FunnelStage[]>([])
@@ -108,22 +109,47 @@ export default function CountryDashboard() {
   const [periodInfo, setPeriodInfo] = useState<{ from: string; to: string; prev_from: string; prev_to: string } | null>(null)
   const [loading, setLoading] = useState(true)
 
-  // Load accounts once
+  // Load branches once
   useEffect(() => {
-    fetch(`${API_BASE}/api/accounts`, { credentials: 'include' })
+    fetch(`${API_BASE}/api/branches`, { credentials: 'include' })
       .then(r => r.json())
-      .then(data => { if (data.success) setAccounts(data.data) })
+      .then(data => { if (data.success) setBranches(data.data) })
       .catch(() => {})
   }, [])
 
-  // Load countries (filtered by branch)
+  const branchParam = selectedBranches.length > 0 ? selectedBranches.join(',') : ''
+
+  // Load countries (filtered by branches)
   useEffect(() => {
-    const accParam = selectedAccount ? `?account_id=${selectedAccount}` : ''
-    fetch(`${API_BASE}/api/dashboard/country/countries${accParam}`, { credentials: 'include' })
+    const qp = branchParam ? `?branches=${encodeURIComponent(branchParam)}` : ''
+    fetch(`${API_BASE}/api/dashboard/country/countries${qp}`, { credentials: 'include' })
       .then(r => r.json())
       .then(res => { if (res.success) setCountries(res.data) })
       .catch(() => {})
-  }, [selectedAccount])
+  }, [branchParam])
+
+  const branchDropdownRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (branchDropdownRef.current && !branchDropdownRef.current.contains(e.target as Node)) {
+        setBranchDropdownOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
+  const toggleBranch = (name: string) => {
+    setSelectedBranches(prev =>
+      prev.includes(name) ? prev.filter(b => b !== name) : [...prev, name]
+    )
+  }
+
+  const activeCurrency = (() => {
+    if (selectedBranches.length === 0) return 'VND'
+    const currencies = [...new Set(selectedBranches.map(b => branches.find(br => br.name === b)?.currency || 'VND'))]
+    return currencies.length === 1 ? currencies[0] : 'VND'
+  })()
 
   const buildQs = useCallback(() => {
     const { from, to } = getDateRange(datePreset)
@@ -131,9 +157,9 @@ export default function CountryDashboard() {
     if (country) params.set('country', country)
     if (platform) params.set('platform', platform)
     if (funnelStage) params.set('funnel_stage', funnelStage)
-    if (selectedAccount) params.set('account_id', selectedAccount)
+    if (branchParam) params.set('branches', branchParam)
     return params.toString()
-  }, [country, platform, funnelStage, selectedAccount, datePreset])
+  }, [country, platform, funnelStage, branchParam, datePreset])
 
   useEffect(() => {
     setLoading(true)
@@ -141,7 +167,7 @@ export default function CountryDashboard() {
     const { from, to } = getDateRange(datePreset)
 
     const taQs = country
-      ? `country=${country}&date_from=${from}&date_to=${to}${platform ? `&platform=${platform}` : ''}${selectedAccount ? `&account_id=${selectedAccount}` : ''}`
+      ? `country=${country}&date_from=${from}&date_to=${to}${platform ? `&platform=${platform}` : ''}${branchParam ? `&branches=${encodeURIComponent(branchParam)}` : ''}`
       : null
 
     Promise.all([
@@ -170,7 +196,7 @@ export default function CountryDashboard() {
       if (funnel.success) setFunnelData(funnel.data?.stages || [])
       setLoading(false)
     }).catch(() => setLoading(false))
-  }, [buildQs, datePreset, country, platform, selectedAccount])
+  }, [buildQs, datePreset, country, platform, branchParam])
 
   // Aggregate KPIs when no country is selected
   const aggregatedKpi = kpiData.length > 0 ? kpiData.reduce((acc, k) => ({
@@ -200,13 +226,48 @@ export default function CountryDashboard() {
             <option value="this_month">This month</option>
             <option value="last_month">Last month</option>
           </select>
-          <select value={selectedAccount} onChange={e => setSelectedAccount(e.target.value)}
-            className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
-            <option value="">All Branches</option>
-            {accounts.map(a => (
-              <option key={a.id} value={a.id}>{a.account_name}</option>
-            ))}
-          </select>
+          <div className="relative" ref={branchDropdownRef}>
+            <button
+              onClick={() => setBranchDropdownOpen(!branchDropdownOpen)}
+              className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white min-w-[180px] text-left flex items-center justify-between gap-2"
+            >
+              <span className="truncate">
+                {selectedBranches.length === 0
+                  ? `All Branches (VND)`
+                  : selectedBranches.length === 1
+                    ? `${selectedBranches[0]} (${activeCurrency})`
+                    : `${selectedBranches.length} branches (${activeCurrency})`}
+              </span>
+              <svg className={`w-4 h-4 text-gray-400 transition-transform ${branchDropdownOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+            </button>
+            {branchDropdownOpen && (
+              <div className="absolute z-50 mt-1 w-56 bg-white border border-gray-200 rounded-lg shadow-lg py-1">
+                {selectedBranches.length > 0 && (
+                  <button
+                    onClick={() => setSelectedBranches([])}
+                    className="w-full px-3 py-1.5 text-xs text-blue-600 hover:bg-gray-50 text-left"
+                  >
+                    Clear all
+                  </button>
+                )}
+                {branches.map(b => (
+                  <label
+                    key={b.name}
+                    className="flex items-center gap-2 px-3 py-2 hover:bg-gray-50 cursor-pointer text-sm"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selectedBranches.includes(b.name)}
+                      onChange={() => toggleBranch(b.name)}
+                      className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                    />
+                    <span>{b.name}</span>
+                    <span className="text-gray-400 text-xs ml-auto">{b.currency}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
           <select value={country} onChange={e => setCountry(e.target.value)}
             className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
             <option value="">All Markets</option>

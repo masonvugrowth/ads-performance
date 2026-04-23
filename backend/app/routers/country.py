@@ -63,10 +63,18 @@ def _apply_common_filters(q, country, platform, date_from, date_to, funnel_stage
     return q
 
 
-def _resolve_scope(db, user, account_id):
-    """Resolve analytics scoping — returns (scoped_account_id, scoped_account_ids, error)."""
+def _resolve_scope(db, user, account_id, branches=None):
+    """Resolve analytics scoping — returns (scoped_account_id, scoped_account_ids, error).
+
+    Accepts either:
+      - account_id: single ad_accounts.id filter
+      - branches: comma-separated list of branch names (e.g. "Saigon,Taipei")
+    """
+    branch_list = [b.strip() for b in branches.split(",") if b.strip()] if branches else None
     ok, scoped_ids, err = scoped_account_ids(
-        db, user, "analytics", requested_account_id=account_id
+        db, user, "analytics",
+        requested_account_id=account_id,
+        requested_branches=branch_list,
     )
     if not ok:
         return None, None, err
@@ -122,12 +130,13 @@ def country_kpi_summary(
     date_to: str = Query(None),
     funnel_stage: str = Query(None),
     account_id: str = Query(None, description="Branch filter — ad_accounts.id"),
+    branches: str = Query(None, description="Comma-separated branch names"),
     current_user: User = Depends(require_section("analytics")),
     db: Session = Depends(get_db),
 ):
     """Country KPI summary with period-over-period comparison."""
     try:
-        account_id, scoped_ids, err = _resolve_scope(db, current_user, account_id)
+        account_id, scoped_ids, err = _resolve_scope(db, current_user, account_id, branches)
         if err:
             return _api_response(error=err)
 
@@ -190,12 +199,13 @@ def ta_breakdown(
     date_from: str = Query(None),
     date_to: str = Query(None),
     account_id: str = Query(None),
+    branches: str = Query(None),
     current_user: User = Depends(require_section("analytics")),
     db: Session = Depends(get_db),
 ):
     """TA x Funnel Stage breakdown for a specific country, with period comparison."""
     try:
-        account_id, scoped_ids, err = _resolve_scope(db, current_user, account_id)
+        account_id, scoped_ids, err = _resolve_scope(db, current_user, account_id, branches)
         if err:
             return _api_response(error=err)
 
@@ -289,12 +299,13 @@ def country_funnel(
     date_from: str = Query(None),
     date_to: str = Query(None),
     account_id: str = Query(None),
+    branches: str = Query(None),
     current_user: User = Depends(require_section("analytics")),
     db: Session = Depends(get_db),
 ):
     """Conversion funnel filterable by country, TA, funnel stage, branch."""
     try:
-        account_id, scoped_ids, err = _resolve_scope(db, current_user, account_id)
+        account_id, scoped_ids, err = _resolve_scope(db, current_user, account_id, branches)
         if err:
             return _api_response(error=err)
 
@@ -371,12 +382,13 @@ def country_comparison(
     date_from: str = Query(None),
     date_to: str = Query(None),
     account_id: str = Query(None),
+    branches: str = Query(None),
     current_user: User = Depends(require_section("analytics")),
     db: Session = Depends(get_db),
 ):
     """Side-by-side comparison across all countries with period change."""
     try:
-        account_id, scoped_ids, err = _resolve_scope(db, current_user, account_id)
+        account_id, scoped_ids, err = _resolve_scope(db, current_user, account_id, branches)
         if err:
             return _api_response(error=err)
 
@@ -435,12 +447,13 @@ def country_comparison(
 @router.get("/dashboard/country/countries")
 def list_countries(
     account_id: str = Query(None),
+    branches: str = Query(None),
     current_user: User = Depends(require_section("analytics")),
     db: Session = Depends(get_db),
 ):
     """List available countries with display names."""
     try:
-        account_id, scoped_ids, err = _resolve_scope(db, current_user, account_id)
+        account_id, scoped_ids, err = _resolve_scope(db, current_user, account_id, branches)
         if err:
             return _api_response(error=err)
 
