@@ -1,9 +1,11 @@
 'use client'
 
 import { useEffect, useState, useCallback, useRef } from 'react'
-import { TrendingUp, TrendingDown, ArrowUp, ArrowDown, ArrowUpDown, ChevronRight } from 'lucide-react'
+import { TrendingUp, TrendingDown, ArrowUp, ArrowDown, ArrowUpDown, ChevronRight, Activity, BarChart3 } from 'lucide-react'
 import { apiFetch } from '@/lib/api'
 import { useSortableRows } from '@/lib/useSortableRows'
+import ActivityLogPanel from './ActivityLogPanel'
+import ManualEntryModal from './ManualEntryModal'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
@@ -127,6 +129,27 @@ export default function CountryDashboard() {
   const [responseCurrency, setResponseCurrency] = useState<string>('VND')
   const [periodInfo, setPeriodInfo] = useState<{ from: string; to: string; prev_from: string; prev_to: string } | null>(null)
   const [loading, setLoading] = useState(true)
+  const [activeTab, setActiveTab] = useState<'overview' | 'activity'>('overview')
+  const [manualModalOpen, setManualModalOpen] = useState(false)
+  const [activityRefreshKey, setActivityRefreshKey] = useState(0)
+  const [canEditAnalytics, setCanEditAnalytics] = useState(false)
+
+  // Detect whether the current user can add manual entries (analytics-edit).
+  useEffect(() => {
+    apiFetch<{ is_admin: boolean; accessible_sections?: Record<string, string[]>; permissions?: Array<{ section: string; level: string }> }>('/api/auth/me')
+      .then((res) => {
+        if (!res.success || !res.data) return
+        if (res.data.is_admin) {
+          setCanEditAnalytics(true)
+          return
+        }
+        const hasEdit = (res.data.permissions || []).some(
+          (p) => p.section === 'analytics' && p.level === 'edit',
+        )
+        setCanEditAnalytics(hasEdit)
+      })
+      .catch(() => {})
+  }, [])
 
   // Load branches once
   useEffect(() => {
@@ -351,7 +374,7 @@ export default function CountryDashboard() {
         <div className="flex items-center justify-center h-64"><div className="text-gray-500">Loading dashboard...</div></div>
       ) : (
         <div className="space-y-6">
-          {/* KPI Summary */}
+          {/* KPI Summary (shown on both tabs) */}
           {selectedKpi && (
             <div className="grid grid-cols-2 lg:grid-cols-6 gap-4">
               {[
@@ -371,8 +394,34 @@ export default function CountryDashboard() {
             </div>
           )}
 
-          {/* TA Breakdown Table */}
-          {country && taData.length > 0 && (
+          {/* Tab switcher */}
+          <div className="flex items-center border-b border-gray-200">
+            <button
+              onClick={() => setActiveTab('overview')}
+              className={`inline-flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
+                activeTab === 'overview'
+                  ? 'border-blue-600 text-blue-600'
+                  : 'border-transparent text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              <BarChart3 className="w-4 h-4" />
+              Overview
+            </button>
+            <button
+              onClick={() => setActiveTab('activity')}
+              className={`inline-flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
+                activeTab === 'activity'
+                  ? 'border-blue-600 text-blue-600'
+                  : 'border-transparent text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              <Activity className="w-4 h-4" />
+              Activity Log
+            </button>
+          </div>
+
+          {/* TA Breakdown Table (Overview only) */}
+          {activeTab === 'overview' && country && taData.length > 0 && (
             <TaBreakdownTable
               rows={taData}
               currency={responseCurrency}
@@ -380,8 +429,8 @@ export default function CountryDashboard() {
             />
           )}
 
-          {/* Conversion Funnel */}
-          {country && funnelData.length > 0 && (
+          {/* Conversion Funnel (Overview only) */}
+          {activeTab === 'overview' && country && funnelData.length > 0 && (
             <div className="bg-white rounded-xl border border-gray-200 p-6">
               <h2 className="text-sm font-semibold text-gray-700 mb-5">
                 Conversion Funnel — {countries.find(c => c.code === country)?.name || country}
@@ -420,15 +469,46 @@ export default function CountryDashboard() {
             </div>
           )}
 
-          {/* Country Comparison Table */}
-          {comparison.length > 0 && <CountryComparisonTable rows={comparison} currency={responseCurrency} />}
+          {/* Country Comparison Table (Overview only) */}
+          {activeTab === 'overview' && comparison.length > 0 && (
+            <CountryComparisonTable rows={comparison} currency={responseCurrency} />
+          )}
 
-          {!loading && kpiData.length === 0 && (
+          {/* Activity Log tab content */}
+          {activeTab === 'activity' && (
+            <ActivityLogPanel
+              country={country}
+              branches={branchParam}
+              platform={platform}
+              dateFrom={resolvedRange().from}
+              dateTo={resolvedRange().to}
+              canEdit={canEditAnalytics}
+              onAddManual={() => setManualModalOpen(true)}
+              refreshKey={activityRefreshKey}
+            />
+          )}
+
+          {activeTab === 'overview' && !loading && kpiData.length === 0 && (
             <div className="text-center py-12 text-gray-400">
               No data available. Run a sync first to populate metrics.
             </div>
           )}
         </div>
+      )}
+
+      {manualModalOpen && (
+        <ManualEntryModal
+          open={manualModalOpen}
+          onClose={() => setManualModalOpen(false)}
+          onCreated={() => {
+            setActivityRefreshKey((k) => k + 1)
+            setManualModalOpen(false)
+          }}
+          defaultCountry={country || null}
+          defaultBranch={selectedBranches.length === 1 ? selectedBranches[0] : null}
+          branches={branches}
+          countries={countries}
+        />
       )}
     </div>
   )
