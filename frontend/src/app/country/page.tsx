@@ -85,6 +85,11 @@ function getDateRange(preset: string): { from: string; to: string } {
     return dt.toISOString().split('T')[0]
   }
   switch (preset) {
+    case 'today': return { from: to, to }
+    case 'yesterday': {
+      const y = daysBack(1)
+      return { from: y, to: y }
+    }
     case '7d': return { from: daysBack(6), to }
     case '14d': return { from: daysBack(13), to }
     case '30d': return { from: daysBack(29), to }
@@ -110,6 +115,8 @@ export default function CountryDashboard() {
   const [selectedBranches, setSelectedBranches] = useState<string[]>([])
   const [branchDropdownOpen, setBranchDropdownOpen] = useState(false)
   const [datePreset, setDatePreset] = useState('7d')
+  const [customFrom, setCustomFrom] = useState('')
+  const [customTo, setCustomTo] = useState('')
 
   const [countries, setCountries] = useState<CountryOption[]>([])
   const [branches, setBranches] = useState<Branch[]>([])
@@ -163,20 +170,28 @@ export default function CountryDashboard() {
     return currencies.length === 1 ? currencies[0] : 'VND'
   })()
 
+  const resolvedRange = useCallback(() => {
+    if (datePreset === 'custom' && customFrom && customTo) {
+      return { from: customFrom, to: customTo }
+    }
+    return getDateRange(datePreset)
+  }, [datePreset, customFrom, customTo])
+
   const buildQs = useCallback(() => {
-    const { from, to } = getDateRange(datePreset)
+    const { from, to } = resolvedRange()
     const params = new URLSearchParams({ date_from: from, date_to: to })
     if (country) params.set('country', country)
     if (platform) params.set('platform', platform)
     if (funnelStage) params.set('funnel_stage', funnelStage)
     if (branchParam) params.set('branches', branchParam)
     return params.toString()
-  }, [country, platform, funnelStage, branchParam, datePreset])
+  }, [country, platform, funnelStage, branchParam, resolvedRange])
 
   useEffect(() => {
+    if (datePreset === 'custom' && (!customFrom || !customTo)) return
     setLoading(true)
     const qs = buildQs()
-    const { from, to } = getDateRange(datePreset)
+    const { from, to } = resolvedRange()
 
     const taQs = country
       ? `country=${country}&date_from=${from}&date_to=${to}${platform ? `&platform=${platform}` : ''}${branchParam ? `&branches=${encodeURIComponent(branchParam)}` : ''}`
@@ -233,12 +248,32 @@ export default function CountryDashboard() {
         <div className="flex flex-wrap items-center gap-2">
           <select value={datePreset} onChange={e => setDatePreset(e.target.value)}
             className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+            <option value="today">Today</option>
+            <option value="yesterday">Yesterday</option>
             <option value="7d">Last 7 days</option>
             <option value="14d">Last 14 days</option>
             <option value="30d">Last 30 days</option>
             <option value="this_month">This month</option>
             <option value="last_month">Last month</option>
+            <option value="custom">Custom range</option>
           </select>
+          {datePreset === 'custom' && (
+            <>
+              <input
+                type="date"
+                value={customFrom}
+                onChange={(e) => setCustomFrom(e.target.value)}
+                className="px-2 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <span className="text-gray-400">→</span>
+              <input
+                type="date"
+                value={customTo}
+                onChange={(e) => setCustomTo(e.target.value)}
+                className="px-2 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </>
+          )}
           <div className="relative" ref={branchDropdownRef}>
             <button
               onClick={() => setBranchDropdownOpen(!branchDropdownOpen)}
