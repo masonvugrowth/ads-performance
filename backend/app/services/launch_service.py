@@ -8,6 +8,7 @@ from app.models.approval import ComboApproval
 from app.models.campaign import Campaign
 from app.models.campaign_auto_config import CampaignAutoConfig
 from app.models.user import User
+from app.services.changelog import log_change
 from app.services.notification_service import create_notification
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,28 @@ def launch_to_existing_campaign(
 
         # Notify creator
         _notify_launch_success(db, approval, combo)
+
+        # Emit change log entry for the new ad creation (never raises).
+        combo_name = combo.ad_name if combo else "Unknown"
+        log_change(
+            db,
+            category="ad_creation",
+            title=f"Ad launched: {combo_name}"[:200],
+            source="auto",
+            triggered_by="manual",
+            occurred_at=now,
+            description=(
+                f"Launched combo '{combo_name}' into existing campaign '{campaign.name}'."
+            ),
+            campaign_id=campaign_id,
+            account_id=campaign.account_id if campaign else None,
+            author_user_id=user_id,
+            after_value={
+                "meta_ad_id": meta_ad_id,
+                "combo_id": str(combo.id) if combo else None,
+                "approval_id": str(approval.id),
+            },
+        )
 
         db.commit()
         return approval
@@ -93,6 +116,33 @@ def launch_with_new_campaign(
         approval.launched_at = now
 
         _notify_launch_success(db, approval, combo)
+
+        # Emit change log entry for the new campaign+adset+ad creation.
+        combo_name = combo.ad_name if combo else "Unknown"
+        log_change(
+            db,
+            category="ad_creation",
+            title=f"Campaign launched: {campaign_name}"[:200],
+            source="auto",
+            triggered_by="manual",
+            occurred_at=now,
+            description=(
+                f"Auto-created campaign + ad set + ad for '{combo_name}' "
+                f"(country={country.upper()}, TA={ta})."
+            ),
+            country=country.upper() if country else None,
+            account_id=account.id if account else None,
+            author_user_id=user_id,
+            after_value={
+                "meta_campaign_id": meta_campaign_id,
+                "meta_adset_id": meta_adset_id,
+                "meta_ad_id": meta_ad_id,
+                "combo_id": str(combo.id) if combo else None,
+                "approval_id": str(approval.id),
+                "ta": ta,
+                "language": language,
+            },
+        )
 
         db.commit()
         return approval

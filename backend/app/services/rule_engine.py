@@ -15,6 +15,7 @@ from app.models.campaign import Campaign
 from app.models.metrics import MetricsCache
 from app.models.rule import AutomationRule
 from app.services import google_actions as google_act
+from app.services.changelog import describe_diff, log_change
 from app.services.meta_actions import (
     enable_ad,
     enable_ad_set,
@@ -303,6 +304,12 @@ def execute_action(
     max_days = max((c.get("days", 7) for c in rule.conditions), default=7)
     snapshot = get_metrics_snapshot(db, entity.id, entity_level, days=max_days)
 
+    # Capture pre-mutation state for change log diff.
+    pre_status = getattr(entity, "status", None)
+    pre_budget = (
+        float(entity.daily_budget or 0) if hasattr(entity, "daily_budget") else None
+    )
+
     success = False
     error_message = None
     action = rule.action
@@ -435,6 +442,51 @@ def execute_action(
         executed_at=now,
     )
     db.add(log)
+    db.flush()  # Populate log.id for change_log_entries.action_log_id link.
+
+    # Emit a user-facing change log entry for successful state-changing actions.
+    # Failures aren't real changes — they go to action_logs only for debugging.
+    if success:
+        before_val: dict | None = None
+        after_val: dict | None = None
+        if action in ("pause_campaign", "pause_adset", "pause_ad"):
+            before_val = {"status": pre_status or "ACTIVE"}
+            after_val = {"status": "PAUSED"}
+        elif action in ("enable_campaign", "enable_adset", "enable_ad"):
+            before_val = {"status": pre_status or "PAUSED"}
+            after_val = {"status": "ACTIVE"}
+        elif action == "adjust_budget":
+            before_val = {"daily_budget": pre_budget}
+            after_val = {"daily_budget": float(entity.daily_budget or 0)}
+
+        change_category = (
+            "automation_rule_applied" if action == "send_alert" else "ad_mutation"
+        )
+        title_diff = describe_diff(before_val, after_val)
+        title_body = title_diff or action.replace("_", " ").title()
+        title = f"[{rule.name}] {title_body}"[:200]
+
+        log_change(
+            db,
+            category=change_category,
+            title=title,
+            source="auto",
+            triggered_by="rule",
+            occurred_at=now,
+            description=(
+                f"Rule '{rule.name}' → {action} on {entity_level} '{entity.name}'"
+            ),
+            campaign_id=_resolve_campaign_id(entity, entity_level),
+            ad_set_id=_resolve_adset_id(entity, entity_level),
+            ad_id=_resolve_ad_id(entity, entity_level),
+            account_id=getattr(entity, "account_id", None),
+            platform=entity.platform,
+            before_value=before_val,
+            after_value=after_val,
+            metrics_snapshot=snapshot,
+            rule_id=rule.id,
+            action_log_id=log.id,
+        )
 
     return {
         "entity_level": entity_level,
@@ -634,6 +686,26 @@ def reenable_paused_ads(db: Session) -> list[dict]:
             executed_at=now,
         )
         db.add(log)
+        db.flush()
+
+        if success:
+            log_change(
+                db,
+                category="ad_mutation",
+                title=f"Ad re-enabled (daily cycle): {ad_obj.name}"[:200],
+                source="auto",
+                triggered_by="rule",
+                occurred_at=now,
+                description="Automatic re-enable of ads paused by 'pause_ad' rules on previous days.",
+                campaign_id=ad_obj.campaign_id,
+                ad_set_id=ad_obj.ad_set_id,
+                ad_id=ad_obj.id,
+                account_id=ad_obj.account_id,
+                platform=ad_obj.platform,
+                before_value={"status": "PAUSED"},
+                after_value={"status": "ACTIVE"},
+                action_log_id=log.id,
+            )
 
         results.append({
             "ad_id": ad_obj.id,
