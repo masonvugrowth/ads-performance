@@ -250,6 +250,84 @@ def country_kpi_summary(
         return _api_response(error=str(e))
 
 
+@router.get("/dashboard/country/daily-spend")
+def daily_spend_series(
+    country: str = Query(None),
+    platform: str = Query(None),
+    date_from: str = Query(None),
+    date_to: str = Query(None),
+    funnel_stage: str = Query(None),
+    account_id: str = Query(None),
+    branches: str = Query(None),
+    current_user: User = Depends(require_section("analytics")),
+    db: Session = Depends(get_db),
+):
+    """Daily spend + revenue + ROAS series for the performance sparkline that
+    the Activity Log overlays change-markers onto. Honors the same scoping +
+    filters as the main KPI endpoint."""
+    try:
+        account_id, scoped_ids, err = _resolve_scope(db, current_user, account_id, branches)
+        if err:
+            return _api_response(error=err)
+
+        display_currency, convert_to_vnd = _resolve_currency(db, account_id, scoped_ids)
+
+        if not date_from or not date_to:
+            df, dt = _default_date_range()
+            date_from = date_from or df.isoformat()
+            date_to = date_to or dt.isoformat()
+
+        df = date.fromisoformat(date_from)
+        dt = date.fromisoformat(date_to)
+
+        q = (
+            db.query(
+                MetricsCache.date.label("date"),
+                AdAccount.currency.label("currency"),
+                func.sum(MetricsCache.spend).label("spend"),
+                func.sum(MetricsCache.revenue).label("revenue"),
+            )
+            .join(Campaign, Campaign.id == MetricsCache.campaign_id)
+            .join(AdAccount, AdAccount.id == Campaign.account_id)
+            .join(AdSet, AdSet.id == MetricsCache.ad_set_id)
+        )
+        q = _apply_common_filters(q, country, platform, df, dt, funnel_stage, account_id, scoped_ids)
+        rows = q.group_by(MetricsCache.date, AdAccount.currency).all()
+
+        agg: dict[str, dict] = {}
+        for row in rows:
+            d = row.date.isoformat() if row.date else None
+            if not d:
+                continue
+            entry = agg.setdefault(d, {"date": d, "spend": 0.0, "revenue": 0.0})
+            fx = _fx(row.currency) if convert_to_vnd else 1
+            entry["spend"] += float(row.spend or 0) * fx
+            entry["revenue"] += float(row.revenue or 0) * fx
+
+        series = []
+        cursor = df
+        while cursor <= dt:
+            key = cursor.isoformat()
+            entry = agg.get(key, {"date": key, "spend": 0.0, "revenue": 0.0})
+            spend = entry["spend"]
+            revenue = entry["revenue"]
+            series.append({
+                "date": key,
+                "spend": round(spend, 2),
+                "revenue": round(revenue, 2),
+                "roas": round(revenue / spend, 4) if spend > 0 else 0,
+            })
+            cursor = cursor + timedelta(days=1)
+
+        return _api_response(data={
+            "series": series,
+            "currency": display_currency,
+            "period": {"from": date_from, "to": date_to},
+        })
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
 @router.get("/dashboard/country/ta-breakdown")
 def ta_breakdown(
     country: str = Query(...),

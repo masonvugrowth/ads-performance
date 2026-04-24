@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Activity,
   Bot,
@@ -15,6 +15,17 @@ import {
   Globe2,
   Filter,
 } from 'lucide-react'
+import {
+  Area,
+  CartesianGrid,
+  ComposedChart,
+  Line,
+  ReferenceDot,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts'
 import { apiFetch } from '@/lib/api'
 
 export type ChangeLogItem = {
@@ -52,6 +63,13 @@ type ListResponse = {
   total: number
   limit: number
   offset: number
+  period: { from: string; to: string }
+}
+
+type DailySpendPoint = { date: string; spend: number; revenue: number; roas: number }
+type DailySpendResponse = {
+  series: DailySpendPoint[]
+  currency: string
   period: { from: string; to: string }
 }
 
@@ -175,6 +193,9 @@ export default function ActivityLogPanel({
   const [categoryFilter, setCategoryFilter] = useState<string[]>([])
   const [sourceFilter, setSourceFilter] = useState<'all' | 'auto' | 'manual'>('all')
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [spendSeries, setSpendSeries] = useState<DailySpendPoint[]>([])
+  const [currency, setCurrency] = useState('VND')
+  const entryRefs = useRef<Record<string, HTMLLIElement | null>>({})
 
   const LIMIT = 50
 
@@ -223,6 +244,21 @@ export default function ActivityLogPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [country, branches, platform, dateFrom, dateTo, categoryFilter, sourceFilter, refreshKey])
 
+  // Load the daily spend series for the overlay chart.
+  useEffect(() => {
+    const params = new URLSearchParams({ date_from: dateFrom, date_to: dateTo })
+    if (country) params.set('country', country)
+    if (branches) params.set('branches', branches)
+    if (platform) params.set('platform', platform)
+    apiFetch<DailySpendResponse>(`/api/dashboard/country/daily-spend?${params.toString()}`)
+      .then((res) => {
+        if (!res.success || !res.data) return
+        setSpendSeries(res.data.series)
+        setCurrency(res.data.currency)
+      })
+      .catch(() => {})
+  }, [country, branches, platform, dateFrom, dateTo])
+
   const toggleCategory = (c: string) => {
     setCategoryFilter((prev) => (prev.includes(c) ? prev.filter((x) => x !== c) : [...prev, c]))
   }
@@ -250,6 +286,42 @@ export default function ActivityLogPanel({
     }
     return out
   }, [items])
+
+  // Markers: one per day bucketed by item count, placed on the spend line so
+  // the user sees WHEN changes happened alongside perf. > 30 changes per day
+  // collapse into a single badged marker.
+  const markers = useMemo(() => {
+    const byDay: Record<string, { count: number; firstCategory: string; firstId: string }> = {}
+    for (const it of items) {
+      const day = it.occurred_at.slice(0, 10)
+      if (!byDay[day]) {
+        byDay[day] = { count: 0, firstCategory: it.category, firstId: it.id }
+      }
+      byDay[day].count += 1
+    }
+    return Object.entries(byDay).map(([day, info]) => {
+      const point = spendSeries.find((p) => p.date === day)
+      return {
+        day,
+        count: info.count,
+        category: info.firstCategory,
+        firstId: info.firstId,
+        spend: point?.spend ?? 0,
+      }
+    })
+  }, [items, spendSeries])
+
+  const scrollToEntry = (id: string) => {
+    const el = entryRefs.current[id]
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      setExpanded((prev) => {
+        const next = new Set(prev)
+        next.add(id)
+        return next
+      })
+    }
+  }
 
   const hasMore = items.length < total
 
@@ -320,6 +392,92 @@ export default function ActivityLogPanel({
         )}
       </div>
 
+      {/* Performance sparkline with change markers overlay */}
+      {spendSeries.length > 1 && (
+        <div className="px-6 pt-3 pb-1">
+          <div className="text-[10px] text-gray-400 uppercase tracking-wide mb-1">
+            Daily spend ({currency}) · change markers
+          </div>
+          <div className="h-32">
+            <ResponsiveContainer width="100%" height="100%">
+              <ComposedChart data={spendSeries} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" vertical={false} />
+                <XAxis
+                  dataKey="date"
+                  tick={{ fontSize: 10, fill: '#9ca3af' }}
+                  tickFormatter={(d: string) => d.slice(5)}
+                  interval="preserveStartEnd"
+                />
+                <YAxis
+                  tick={{ fontSize: 10, fill: '#9ca3af' }}
+                  tickFormatter={(n: number) =>
+                    n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` :
+                    n >= 1000 ? `${(n / 1000).toFixed(0)}k` : String(n)
+                  }
+                  width={45}
+                />
+                <Tooltip
+                  contentStyle={{ fontSize: 11, padding: '4px 8px' }}
+                  labelFormatter={(d: string) => d}
+                  formatter={(val: number, name: string) => [fmtNum(val), name]}
+                />
+                <Area
+                  type="monotone"
+                  dataKey="spend"
+                  fill="#dbeafe"
+                  stroke="#3b82f6"
+                  strokeWidth={1.5}
+                  dot={false}
+                  name="Spend"
+                />
+                <Line
+                  type="monotone"
+                  dataKey="revenue"
+                  stroke="#10b981"
+                  strokeWidth={1.5}
+                  dot={false}
+                  name="Revenue"
+                />
+                {markers.map((m) => {
+                  const meta = CATEGORY_META[m.category] || CATEGORY_META.other
+                  // Extract the tailwind bg color's hex as a simple palette.
+                  const color =
+                    m.category === 'ad_creation' ? '#10b981' :
+                    m.category === 'automation_rule_applied' ? '#6366f1' :
+                    m.category === 'landing_page' ? '#a855f7' :
+                    m.category === 'external_seasonality' ? '#f59e0b' :
+                    m.category === 'external_competitor' ? '#f43f5e' :
+                    m.category === 'external_algorithm' ? '#0ea5e9' :
+                    m.category === 'tracking_integrity' ? '#ef4444' :
+                    '#3b82f6'
+                  return (
+                    <ReferenceDot
+                      key={m.day}
+                      x={m.day}
+                      y={m.spend}
+                      r={m.count > 5 ? 7 : 5}
+                      fill={color}
+                      stroke="#fff"
+                      strokeWidth={2}
+                      onClick={() => scrollToEntry(m.firstId)}
+                      style={{ cursor: 'pointer' }}
+                      label={m.count > 1 ? {
+                        value: m.count,
+                        fill: '#fff',
+                        fontSize: 9,
+                        fontWeight: 700,
+                        position: 'center',
+                      } : undefined}
+                      ifOverflow="visible"
+                    />
+                  )
+                })}
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
+
       {/* Timeline */}
       <div className="px-6 py-4 space-y-5">
         {loading && items.length === 0 && (
@@ -345,6 +503,7 @@ export default function ActivityLogPanel({
                 return (
                   <li
                     key={it.id}
+                    ref={(el) => { entryRefs.current[it.id] = el }}
                     className="border border-gray-200 rounded-lg p-3 hover:bg-gray-50 transition-colors cursor-pointer"
                     onClick={() => toggleExpanded(it.id)}
                   >
