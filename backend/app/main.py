@@ -13,6 +13,7 @@ from app.routers import (
     booking_matches,
     budget,
     campaigns,
+    changelog,
     country,
     creative,
     export,
@@ -75,6 +76,7 @@ app.include_router(internal_tasks.router, prefix="/api", tags=["internal-tasks"]
 app.include_router(settings_router.router, prefix="/api", tags=["settings"])
 app.include_router(landing_pages.router, prefix="/api", tags=["landing-pages"])
 app.include_router(public_landing.router, prefix="/api", tags=["public-landing"])
+app.include_router(changelog.router, prefix="/api", tags=["changelog"])
 
 
 @app.get("/health")
