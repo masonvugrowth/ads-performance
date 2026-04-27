@@ -416,33 +416,50 @@ function CountryDashboardInner() {
         <div className="flex items-center justify-center h-64"><div className="text-gray-500">Loading dashboard...</div></div>
       ) : (
         <div className="space-y-6">
-          {/* KPI Summary (shown on both tabs).
-              Adds CR / AOV / CPC alongside the existing six so the user can
-              decompose ROAS = CR × AOV / CPC at a glance — wired from the
-              "Open in Country Dashboard" deep-link on rec cards. */}
+          {/* KPI Summary (shown on both tabs). Two rows so the labels never
+              wrap: row 1 = headline metrics; row 2 = the ROAS = CR × AOV /
+              CPC decomposition the user opens this dashboard from a rec to
+              diagnose. */}
           {selectedKpi && (() => {
             const cr = selectedKpi.clicks ? (selectedKpi.conversions / selectedKpi.clicks) * 100 : 0
             const aov = selectedKpi.conversions ? selectedKpi.total_revenue / selectedKpi.conversions : 0
             const cpc = selectedKpi.clicks ? selectedKpi.total_spend / selectedKpi.clicks : 0
+            const headline = [
+              { label: `Spend (${responseCurrency})`, value: fmtMoney(selectedKpi.total_spend, responseCurrency), change: country ? kpiData.find(k => k.country_code === country)?.spend_change : null, inverse: true },
+              { label: `Revenue (${responseCurrency})`, value: fmtMoney(selectedKpi.total_revenue, responseCurrency), change: country ? kpiData.find(k => k.country_code === country)?.revenue_change : null, inverse: false },
+              { label: 'ROAS', value: selectedKpi.total_spend ? (selectedKpi.total_revenue / selectedKpi.total_spend).toFixed(2) + 'x' : '0', change: country ? kpiData.find(k => k.country_code === country)?.roas_change : null, inverse: false },
+              { label: 'CTR', value: selectedKpi.impressions ? ((selectedKpi.clicks / selectedKpi.impressions) * 100).toFixed(1) + '%' : '0%', change: country ? kpiData.find(k => k.country_code === country)?.ctr_change ?? null : null, inverse: false },
+              { label: `CPA (${responseCurrency})`, value: selectedKpi.conversions ? fmtMoney(Math.round(selectedKpi.total_spend / selectedKpi.conversions), responseCurrency) : '--', change: country ? kpiData.find(k => k.country_code === country)?.cpa_change ?? null : null, inverse: true },
+              { label: 'Campaigns', value: String(selectedKpi.campaign_count), change: null, inverse: false },
+            ]
+            const decomp = [
+              { label: 'CR (Conversion Rate)', value: cr ? cr.toFixed(2) + '%' : '--', change: null, inverse: false },
+              { label: `AOV (${responseCurrency})`, value: aov ? fmtMoney(Math.round(aov), responseCurrency) : '--', change: null, inverse: false },
+              { label: `CPC (${responseCurrency})`, value: cpc ? fmtMoney(Math.round(cpc), responseCurrency) : '--', change: null, inverse: true },
+            ]
+            const renderCard = (kpi: typeof headline[number]) => (
+              <div key={kpi.label} className="bg-white rounded-xl border border-gray-200 p-5">
+                <p className="text-xs text-gray-500 mb-1 truncate">{kpi.label}</p>
+                <p className="text-2xl font-bold text-gray-900">{kpi.value}</p>
+                <div className="mt-2"><ChangeTag change={kpi.change ?? null} inverseColor={kpi.inverse} /></div>
+              </div>
+            )
             return (
-              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-9 gap-4">
-                {[
-                  { label: `Spend (${responseCurrency})`, value: fmtMoney(selectedKpi.total_spend, responseCurrency), change: country ? kpiData.find(k => k.country_code === country)?.spend_change : null, inverse: true },
-                  { label: `Revenue (${responseCurrency})`, value: fmtMoney(selectedKpi.total_revenue, responseCurrency), change: country ? kpiData.find(k => k.country_code === country)?.revenue_change : null, inverse: false },
-                  { label: 'ROAS', value: selectedKpi.total_spend ? (selectedKpi.total_revenue / selectedKpi.total_spend).toFixed(2) + 'x' : '0', change: country ? kpiData.find(k => k.country_code === country)?.roas_change : null, inverse: false },
-                  { label: 'CR', value: cr ? cr.toFixed(2) + '%' : '--', change: null, inverse: false },
-                  { label: `AOV (${responseCurrency})`, value: aov ? fmtMoney(Math.round(aov), responseCurrency) : '--', change: null, inverse: false },
-                  { label: `CPC (${responseCurrency})`, value: cpc ? fmtMoney(Math.round(cpc), responseCurrency) : '--', change: null, inverse: true },
-                  { label: 'CTR', value: selectedKpi.impressions ? ((selectedKpi.clicks / selectedKpi.impressions) * 100).toFixed(1) + '%' : '0%', change: country ? kpiData.find(k => k.country_code === country)?.ctr_change ?? null : null, inverse: false },
-                  { label: `CPA (${responseCurrency})`, value: selectedKpi.conversions ? fmtMoney(Math.round(selectedKpi.total_spend / selectedKpi.conversions), responseCurrency) : '--', change: country ? kpiData.find(k => k.country_code === country)?.cpa_change ?? null : null, inverse: true },
-                  { label: 'Campaigns', value: String(selectedKpi.campaign_count), change: null, inverse: false },
-                ].map(kpi => (
-                  <div key={kpi.label} className="bg-white rounded-xl border border-gray-200 p-5">
-                    <p className="text-xs text-gray-500 mb-1">{kpi.label}</p>
-                    <p className="text-2xl font-bold text-gray-900">{kpi.value}</p>
-                    <div className="mt-2"><ChangeTag change={kpi.change ?? null} inverseColor={kpi.inverse} /></div>
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+                  {headline.map(renderCard)}
+                </div>
+                <div>
+                  <div className="flex items-center gap-2 mb-2 text-[11px] uppercase tracking-wider text-gray-400 font-semibold">
+                    ROAS decomposition
+                    <span className="text-gray-300 normal-case font-normal tracking-normal">
+                      ROAS = CR × AOV / CPC
+                    </span>
                   </div>
-                ))}
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    {decomp.map(renderCard)}
+                  </div>
+                </div>
               </div>
             )
           })()}
