@@ -131,6 +131,51 @@ def probe(branch: str, date_from: date, date_to: date) -> dict:
             entry["error"] = str(e)
         attempts.append(entry)
 
+    # If list call worked, follow up with getReservation for the first ID so
+    # we can see the full payload (total, guest country/email, rooms, rate
+    # plans) — getReservations alone is too thin for matching.
+    detail_payload: dict | None = None
+    detail_top_level_keys: list[str] | None = None
+    detail_attempts: list[dict] = []
+    if chosen and sample_reservation:
+        first_id = sample_reservation.get("reservationID")
+        chosen_headers = next(
+            (v["headers"] for v in _auth_variants(api_key) if v["label"] == chosen),
+            None,
+        )
+        if first_id and chosen_headers is not None:
+            for endpoint in ("getReservation", "getReservationsWithRateDetails"):
+                entry: dict[str, Any] = {"endpoint": endpoint}
+                try:
+                    resp = requests.get(
+                        f"{BASE_URL}/{endpoint}",
+                        headers=chosen_headers,
+                        params={
+                            "propertyID": property_id,
+                            "reservationID": first_id,
+                        },
+                        timeout=30,
+                    )
+                    entry["status"] = resp.status_code
+                    body = None
+                    try:
+                        body = resp.json()
+                    except ValueError:
+                        entry["body_text"] = _short(resp.text)
+                    if body is not None:
+                        entry["body_preview"] = _short(body)
+                        if isinstance(body, dict) and body.get("success") is True:
+                            entry["ok"] = True
+                            data = body.get("data")
+                            if isinstance(data, list) and data:
+                                data = data[0]
+                            if isinstance(data, dict) and detail_payload is None:
+                                detail_payload = data
+                                detail_top_level_keys = sorted(data.keys())
+                except requests.RequestException as e:
+                    entry["error"] = str(e)
+                detail_attempts.append(entry)
+
     return {
         "branch": branch,
         "base_url": BASE_URL,
@@ -141,6 +186,9 @@ def probe(branch: str, date_from: date, date_to: date) -> dict:
         "attempts": attempts,
         "sample_reservation": sample_reservation,
         "sample_top_level_keys": sample_top_level_keys,
+        "detail_attempts": detail_attempts,
+        "detail_payload": detail_payload,
+        "detail_top_level_keys": detail_top_level_keys,
     }
 
 
