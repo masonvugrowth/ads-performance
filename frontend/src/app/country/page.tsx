@@ -1,7 +1,8 @@
 'use client'
 
 import { useEffect, useState, useCallback, useRef } from 'react'
-import { TrendingUp, TrendingDown, ArrowUp, ArrowDown, ArrowUpDown, ChevronRight, Activity, BarChart3 } from 'lucide-react'
+import { useSearchParams } from 'next/navigation'
+import { TrendingUp, TrendingDown, ArrowUp, ArrowDown, ArrowUpDown, ChevronRight, Activity, BarChart3, Sparkles } from 'lucide-react'
 import { apiFetch } from '@/lib/api'
 import { useSortableRows } from '@/lib/useSortableRows'
 import ActivityLogPanel from './ActivityLogPanel'
@@ -20,6 +21,33 @@ function fmtMoney(n: number, currency: string): string {
 
 type CountryOption = { code: string; name: string; adset_count: number }
 type Branch = { name: string; currency: string }
+
+type CampaignRow = {
+  campaign_id: string
+  campaign_name: string
+  campaign_status: string
+  funnel_stage: string | null
+  ta: string | null
+  platform: string
+  account_name: string
+  spend: number
+  revenue: number
+  impressions: number
+  clicks: number
+  conversions: number
+  roas: number
+  ctr: number
+  cpc: number
+  cpa: number
+  cr: number
+  aov: number
+  spend_change: number | null
+  roas_change: number | null
+  cr_change: number | null
+  aov_change: number | null
+  cpc_change: number | null
+  conversions_change: number | null
+}
 
 type CountryKpi = {
   country_code: string
@@ -111,12 +139,23 @@ function getDateRange(preset: string): { from: string; to: string } {
 const fmt = (n: number) => new Intl.NumberFormat('vi-VN', { maximumFractionDigits: 0 }).format(n)
 
 export default function CountryDashboard() {
-  const [country, setCountry] = useState('')
-  const [platform, setPlatform] = useState('')
-  const [funnelStage, setFunnelStage] = useState('')
-  const [selectedBranches, setSelectedBranches] = useState<string[]>([])
+  const search = useSearchParams()
+  // Deep-link inputs from /meta/recommendations card. The page reads these
+  // once on mount, then ignores subsequent URL changes so user filter edits
+  // don't fight the URL.
+  const initialBranches = (search.get('branches') || '').split(',').map(s => s.trim()).filter(Boolean)
+  const initialCountry = (search.get('country') || '').toUpperCase()
+  const initialPlatform = (search.get('platform') || '').toLowerCase()
+  const initialFunnel = (search.get('funnel') || '').toUpperCase()
+  const initialRange = search.get('range') || '7d'
+  const highlightCampaignId = search.get('campaign') || ''
+
+  const [country, setCountry] = useState(initialCountry)
+  const [platform, setPlatform] = useState(initialPlatform)
+  const [funnelStage, setFunnelStage] = useState(initialFunnel)
+  const [selectedBranches, setSelectedBranches] = useState<string[]>(initialBranches)
   const [branchDropdownOpen, setBranchDropdownOpen] = useState(false)
-  const [datePreset, setDatePreset] = useState('7d')
+  const [datePreset, setDatePreset] = useState(initialRange)
   const [customFrom, setCustomFrom] = useState('')
   const [customTo, setCustomTo] = useState('')
 
@@ -124,6 +163,7 @@ export default function CountryDashboard() {
   const [branches, setBranches] = useState<Branch[]>([])
   const [kpiData, setKpiData] = useState<CountryKpi[]>([])
   const [taData, setTaData] = useState<TaRow[]>([])
+  const [campaignRows, setCampaignRows] = useState<CampaignRow[]>([])
   const [funnelData, setFunnelData] = useState<FunnelStage[]>([])
   const [comparison, setComparison] = useState<CountryKpi[]>([])
   const [responseCurrency, setResponseCurrency] = useState<string>('VND')
@@ -229,7 +269,8 @@ export default function CountryDashboard() {
       taQs
         ? fetch(`${API_BASE}/api/dashboard/country/funnel?${taQs}`, { credentials: 'include' }).then(r => r.json())
         : Promise.resolve({ success: true, data: { stages: [] } }),
-    ]).then(([kpi, comp, ta, funnel]) => {
+      fetch(`${API_BASE}/api/dashboard/country/campaigns?${qs}`, { credentials: 'include' }).then(r => r.json()),
+    ]).then(([kpi, comp, ta, funnel, campaigns]) => {
       if (kpi.success && kpi.data) {
         setKpiData(kpi.data.items || [])
         setResponseCurrency(kpi.data.currency || 'VND')
@@ -245,6 +286,7 @@ export default function CountryDashboard() {
       if (comp.success) setComparison(comp.data || [])
       if (ta.success) setTaData(Array.isArray(ta.data) ? ta.data : [])
       if (funnel.success) setFunnelData(funnel.data?.stages || [])
+      if (campaigns.success) setCampaignRows(campaigns.data?.items || [])
       setLoading(false)
     }).catch(() => setLoading(false))
   }, [buildQs, datePreset, country, platform, branchParam])
@@ -374,25 +416,36 @@ export default function CountryDashboard() {
         <div className="flex items-center justify-center h-64"><div className="text-gray-500">Loading dashboard...</div></div>
       ) : (
         <div className="space-y-6">
-          {/* KPI Summary (shown on both tabs) */}
-          {selectedKpi && (
-            <div className="grid grid-cols-2 lg:grid-cols-6 gap-4">
-              {[
-                { label: `Spend (${responseCurrency})`, value: fmtMoney(selectedKpi.total_spend, responseCurrency), change: country ? kpiData.find(k => k.country_code === country)?.spend_change : null, inverse: true },
-                { label: `Revenue (${responseCurrency})`, value: fmtMoney(selectedKpi.total_revenue, responseCurrency), change: country ? kpiData.find(k => k.country_code === country)?.revenue_change : null, inverse: false },
-                { label: 'ROAS', value: selectedKpi.total_spend ? (selectedKpi.total_revenue / selectedKpi.total_spend).toFixed(2) + 'x' : '0', change: country ? kpiData.find(k => k.country_code === country)?.roas_change : null, inverse: false },
-                { label: 'CTR', value: selectedKpi.impressions ? ((selectedKpi.clicks / selectedKpi.impressions) * 100).toFixed(1) + '%' : '0%', change: country ? kpiData.find(k => k.country_code === country)?.ctr_change ?? null : null, inverse: false },
-                { label: `CPA (${responseCurrency})`, value: selectedKpi.conversions ? fmtMoney(Math.round(selectedKpi.total_spend / selectedKpi.conversions), responseCurrency) : '--', change: country ? kpiData.find(k => k.country_code === country)?.cpa_change ?? null : null, inverse: true },
-                { label: 'Campaigns', value: String(selectedKpi.campaign_count), change: null, inverse: false },
-              ].map(kpi => (
-                <div key={kpi.label} className="bg-white rounded-xl border border-gray-200 p-5">
-                  <p className="text-xs text-gray-500 mb-1">{kpi.label}</p>
-                  <p className="text-2xl font-bold text-gray-900">{kpi.value}</p>
-                  <div className="mt-2"><ChangeTag change={kpi.change ?? null} inverseColor={kpi.inverse} /></div>
-                </div>
-              ))}
-            </div>
-          )}
+          {/* KPI Summary (shown on both tabs).
+              Adds CR / AOV / CPC alongside the existing six so the user can
+              decompose ROAS = CR × AOV / CPC at a glance — wired from the
+              "Open in Country Dashboard" deep-link on rec cards. */}
+          {selectedKpi && (() => {
+            const cr = selectedKpi.clicks ? (selectedKpi.conversions / selectedKpi.clicks) * 100 : 0
+            const aov = selectedKpi.conversions ? selectedKpi.total_revenue / selectedKpi.conversions : 0
+            const cpc = selectedKpi.clicks ? selectedKpi.total_spend / selectedKpi.clicks : 0
+            return (
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-9 gap-4">
+                {[
+                  { label: `Spend (${responseCurrency})`, value: fmtMoney(selectedKpi.total_spend, responseCurrency), change: country ? kpiData.find(k => k.country_code === country)?.spend_change : null, inverse: true },
+                  { label: `Revenue (${responseCurrency})`, value: fmtMoney(selectedKpi.total_revenue, responseCurrency), change: country ? kpiData.find(k => k.country_code === country)?.revenue_change : null, inverse: false },
+                  { label: 'ROAS', value: selectedKpi.total_spend ? (selectedKpi.total_revenue / selectedKpi.total_spend).toFixed(2) + 'x' : '0', change: country ? kpiData.find(k => k.country_code === country)?.roas_change : null, inverse: false },
+                  { label: 'CR', value: cr ? cr.toFixed(2) + '%' : '--', change: null, inverse: false },
+                  { label: `AOV (${responseCurrency})`, value: aov ? fmtMoney(Math.round(aov), responseCurrency) : '--', change: null, inverse: false },
+                  { label: `CPC (${responseCurrency})`, value: cpc ? fmtMoney(Math.round(cpc), responseCurrency) : '--', change: null, inverse: true },
+                  { label: 'CTR', value: selectedKpi.impressions ? ((selectedKpi.clicks / selectedKpi.impressions) * 100).toFixed(1) + '%' : '0%', change: country ? kpiData.find(k => k.country_code === country)?.ctr_change ?? null : null, inverse: false },
+                  { label: `CPA (${responseCurrency})`, value: selectedKpi.conversions ? fmtMoney(Math.round(selectedKpi.total_spend / selectedKpi.conversions), responseCurrency) : '--', change: country ? kpiData.find(k => k.country_code === country)?.cpa_change ?? null : null, inverse: true },
+                  { label: 'Campaigns', value: String(selectedKpi.campaign_count), change: null, inverse: false },
+                ].map(kpi => (
+                  <div key={kpi.label} className="bg-white rounded-xl border border-gray-200 p-5">
+                    <p className="text-xs text-gray-500 mb-1">{kpi.label}</p>
+                    <p className="text-2xl font-bold text-gray-900">{kpi.value}</p>
+                    <div className="mt-2"><ChangeTag change={kpi.change ?? null} inverseColor={kpi.inverse} /></div>
+                  </div>
+                ))}
+              </div>
+            )
+          })()}
 
           {/* Tab switcher */}
           <div className="flex items-center border-b border-gray-200">
@@ -426,6 +479,22 @@ export default function CountryDashboard() {
               rows={taData}
               currency={responseCurrency}
               title={`TA Breakdown — ${countries.find(c => c.code === country)?.name || country}`}
+            />
+          )}
+
+          {/* Campaign Breakdown — surfaces per-campaign CR/AOV/CPC so the user
+              can see which factor is dragging ROAS. Highlights the campaign
+              passed via ?campaign=<id> from a recommendation deep-link. */}
+          {activeTab === 'overview' && campaignRows.length > 0 && (
+            <CampaignBreakdownTable
+              rows={campaignRows}
+              currency={responseCurrency}
+              highlightId={highlightCampaignId}
+              title={
+                country
+                  ? `Campaign Breakdown — ${countries.find(c => c.code === country)?.name || country}`
+                  : 'Campaign Breakdown'
+              }
             />
           )}
 
@@ -591,6 +660,125 @@ function TaBreakdownTable({ rows, title, currency }: { rows: TaRow[]; title: str
                 </td>
               </tr>
             ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+function CampaignBreakdownTable({
+  rows, currency, highlightId, title,
+}: {
+  rows: CampaignRow[]
+  currency: string
+  highlightId: string
+  title: string
+}) {
+  const { sorted, sortBy, sortDir, toggleSort } = useSortableRows<CampaignRow>(rows, 'spend', 'desc')
+  // Float the highlighted (deep-linked) campaign to the top regardless of sort.
+  const ordered = highlightId
+    ? [
+      ...sorted.filter(r => r.campaign_id === highlightId),
+      ...sorted.filter(r => r.campaign_id !== highlightId),
+    ]
+    : sorted
+  const highlightRef = useRef<HTMLTableRowElement>(null)
+  useEffect(() => {
+    if (highlightId && highlightRef.current) {
+      highlightRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }
+  }, [highlightId, rows.length])
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+      <div className="px-6 py-4 border-b flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-gray-700">{title}</h2>
+        <span className="text-[11px] text-gray-400">ROAS = CR × AOV / CPC</span>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-gray-100">
+              <SortableTh<CampaignRow> col="campaign_name" label="Campaign" align="left" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
+              <SortableTh<CampaignRow> col="funnel_stage" label="Funnel" align="left" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
+              <SortableTh<CampaignRow> col="spend" label={`Spend (${currency})`} sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
+              <SortableTh<CampaignRow> col="revenue" label={`Revenue (${currency})`} sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
+              <SortableTh<CampaignRow> col="roas" label="ROAS" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
+              <SortableTh<CampaignRow> col="cr" label="CR" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
+              <SortableTh<CampaignRow> col="aov" label={`AOV (${currency})`} sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
+              <SortableTh<CampaignRow> col="cpc" label={`CPC (${currency})`} sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
+              <SortableTh<CampaignRow> col="conversions" label="Conv" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
+            </tr>
+          </thead>
+          <tbody>
+            {ordered.map(row => {
+              const isHighlight = row.campaign_id === highlightId
+              return (
+                <tr
+                  key={row.campaign_id}
+                  ref={isHighlight ? highlightRef : null}
+                  className={`border-b border-gray-50 ${
+                    isHighlight
+                      ? 'bg-blue-50 ring-2 ring-inset ring-blue-300'
+                      : 'hover:bg-gray-50'
+                  }`}
+                >
+                  <td className="py-3 px-4">
+                    <div className="flex items-center gap-2">
+                      {isHighlight && (
+                        <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-blue-700 bg-blue-100 px-1.5 py-0.5 rounded">
+                          <Sparkles className="w-3 h-3" /> from rec
+                        </span>
+                      )}
+                      <span className="font-medium text-gray-900 break-words" title={row.campaign_name}>
+                        {row.campaign_name}
+                      </span>
+                    </div>
+                    <div className="text-[11px] text-gray-400 mt-0.5">
+                      {[row.account_name, row.platform, row.ta].filter(Boolean).join(' · ')}
+                    </div>
+                  </td>
+                  <td className="py-3 px-4">
+                    {row.funnel_stage && (
+                      <span className={`text-xs px-2 py-0.5 rounded-full ${
+                        row.funnel_stage === 'TOF' ? 'bg-blue-100 text-blue-700' :
+                        row.funnel_stage === 'MOF' ? 'bg-amber-100 text-amber-700' :
+                        row.funnel_stage === 'BOF' ? 'bg-green-100 text-green-700' :
+                        'bg-gray-100 text-gray-700'
+                      }`}>{row.funnel_stage}</span>
+                    )}
+                  </td>
+                  <td className="py-3 px-4 text-right">
+                    <div>{fmtMoney(row.spend, currency)}</div>
+                    <ChangeTag change={row.spend_change} inverseColor />
+                  </td>
+                  <td className="py-3 px-4 text-right">{fmtMoney(row.revenue, currency)}</td>
+                  <td className="py-3 px-4 text-right">
+                    <div className={`font-medium ${row.roas >= 1 ? 'text-green-600' : 'text-red-600'}`}>
+                      {row.roas.toFixed(2)}x
+                    </div>
+                    <ChangeTag change={row.roas_change} />
+                  </td>
+                  <td className="py-3 px-4 text-right">
+                    <div>{row.cr.toFixed(2)}%</div>
+                    <ChangeTag change={row.cr_change} />
+                  </td>
+                  <td className="py-3 px-4 text-right">
+                    <div>{row.aov ? fmtMoney(Math.round(row.aov), currency) : '--'}</div>
+                    <ChangeTag change={row.aov_change} />
+                  </td>
+                  <td className="py-3 px-4 text-right">
+                    <div>{row.cpc ? fmtMoney(Math.round(row.cpc), currency) : '--'}</div>
+                    <ChangeTag change={row.cpc_change} inverseColor />
+                  </td>
+                  <td className="py-3 px-4 text-right">
+                    <div>{row.conversions}</div>
+                    <ChangeTag change={row.conversions_change} />
+                  </td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       </div>

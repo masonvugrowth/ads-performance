@@ -1,6 +1,8 @@
 'use client'
 
 import { useState } from 'react'
+import Link from 'next/link'
+import { ExternalLink } from 'lucide-react'
 import InfoTag from '@/components/InfoTag'
 import {
   fmtMoney,
@@ -9,6 +11,22 @@ import {
   splitReasoningBullets,
   type MetricHighlight,
 } from '@/lib/recHighlights'
+
+// Mirror of backend `resolve_branch_for_account_name` (core/branches.py).
+// The Country Dashboard `branches` query param expects canonical keys like
+// "Taipei", but rec.context.account_name is the full name ("Meander Taipei").
+function accountNameToBranchKey(name: string | undefined): string | null {
+  if (!name) return null
+  const lower = name.toLowerCase()
+  // Order matters: "Oani (Taipei)" must be matched before bare "taipei".
+  if (lower.includes('oani')) return 'Oani'
+  if (lower.includes('saigon')) return 'Saigon'
+  if (lower.includes('osaka')) return 'Osaka'
+  if (lower.includes('1948')) return '1948'
+  if (lower.includes('bread')) return 'Bread'
+  if (lower.includes('meander taipei') || lower === 'taipei') return 'Taipei'
+  return null
+}
 
 // Madgicx-style recommendation card. Used by /meta/recommendations and
 // /google/recommendations. The compact summary always renders; clicking
@@ -45,6 +63,9 @@ export interface RecCommonShape {
     campaign_objective?: string | null
     campaign_daily_budget?: number | null
     campaign_lifetime_budget?: number | null
+    // Dominant adset country at the campaign level — used to deep-link
+    // campaign-level recommendations into the Country Dashboard.
+    campaign_country?: string
     ad_set_name?: string
     ad_set_status?: string
     ad_set_daily_budget?: number | null
@@ -69,6 +90,13 @@ export interface RecCommonShape {
   funnel_stage?: string | null
   targeted_country?: string | null
   campaign_type?: string | null
+  // Entity ids — present on both meta and google rec payloads. Typed
+  // optional here so the shared card can deep-link without forcing every
+  // caller to extend the shape.
+  campaign_id?: string | null
+  ad_set_id?: string | null
+  ad_group_id?: string | null
+  ad_id?: string | null
 }
 
 const SEVERITY_BG: Record<Severity, string> = {
@@ -424,6 +452,24 @@ function SettingsColumn({
   const setCountry = ctx.ad_set_country || ctx.ad_group_country
   const setLabel = platform === 'meta' ? 'Ad set' : 'Ad group'
 
+  // Deep-link to the Country Dashboard pre-filtered to this rec's branch +
+  // country + 7d window so the user can see why ROAS dropped (CR vs AOV vs
+  // CPC). Highlights the originating campaign in the campaign breakdown.
+  const branchKey = accountNameToBranchKey(ctx.account_name)
+  const dashCountry = rec.targeted_country || setCountry || ctx.campaign_country || ''
+  const canDeepLink = platform === 'meta' && Boolean(branchKey) && Boolean(rec.campaign_id || rec.ad_set_id || rec.ad_id)
+  const dashHref = (() => {
+    if (!canDeepLink || !branchKey) return null
+    const params = new URLSearchParams()
+    params.set('branches', branchKey)
+    if (dashCountry) params.set('country', dashCountry)
+    params.set('platform', 'meta')
+    params.set('range', '7d')
+    if (rec.funnel_stage) params.set('funnel', rec.funnel_stage)
+    if (rec.campaign_id) params.set('campaign', rec.campaign_id)
+    return `/country?${params.toString()}`
+  })()
+
   const rows: Array<[string, React.ReactNode]> = []
   if (ctx.account_name) rows.push(['Branch', ctx.account_name])
   if (ctx.campaign_name) {
@@ -501,6 +547,16 @@ function SettingsColumn({
             </div>
           ))}
         </dl>
+      )}
+      {dashHref && (
+        <Link
+          href={dashHref}
+          className="mt-1 inline-flex w-full items-center justify-center gap-1.5 rounded border border-blue-200 bg-white px-3 py-2 text-xs font-semibold text-blue-700 hover:bg-blue-50"
+          title="Open in Country Dashboard — see CR / AOV / CPC for this campaign"
+        >
+          <ExternalLink className="w-3 h-3" />
+          Open in Country Dashboard
+        </Link>
       )}
     </div>
   )

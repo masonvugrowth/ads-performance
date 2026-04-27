@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.account import AdAccount
@@ -121,6 +122,33 @@ def build_context_map(
         if asset_group_ids else {}
     )
 
+    # Per-campaign dominant adset country — used by the frontend to deep-link
+    # campaign-level recommendations into the Country Dashboard. Picked as the
+    # country with the most adsets under each campaign; ties resolve
+    # alphabetically. Skipped for recs that already carry an ad_set/ad_group_id
+    # since those have their own country in the ad_sets row.
+    campaign_country_map: dict[str, str] = {}
+    if campaign_ids:
+        camp_country_rows = (
+            db.query(
+                AdSet.campaign_id,
+                AdSet.country,
+                func.count(AdSet.id).label("n"),
+            )
+            .filter(AdSet.campaign_id.in_(campaign_ids))
+            .filter(AdSet.country.isnot(None))
+            .filter(AdSet.country != "Unknown")
+            .group_by(AdSet.campaign_id, AdSet.country)
+            .all()
+        )
+        # Pick max-count country per campaign.
+        per_campaign: dict[str, tuple[str, int]] = {}
+        for row in camp_country_rows:
+            cur = per_campaign.get(row.campaign_id)
+            if cur is None or row.n > cur[1] or (row.n == cur[1] and row.country < cur[0]):
+                per_campaign[row.campaign_id] = (row.country, int(row.n))
+        campaign_country_map = {cid: c for cid, (c, _) in per_campaign.items()}
+
     out: dict[str, dict[str, Any]] = {}
     for r in recs:
         ctx: dict[str, Any] = {}
@@ -129,13 +157,17 @@ def build_context_map(
             ctx["account_name"] = acct.account_name
             ctx["currency"] = acct.currency
 
-        camp = campaigns.get(getattr(r, "campaign_id", None))
+        camp_id = getattr(r, "campaign_id", None)
+        camp = campaigns.get(camp_id)
         if camp is not None:
             ctx["campaign_name"] = camp.name
             ctx["campaign_status"] = camp.status
             ctx["campaign_objective"] = camp.objective
             ctx["campaign_daily_budget"] = _to_float(camp.daily_budget)
             ctx["campaign_lifetime_budget"] = _to_float(camp.lifetime_budget)
+            cc = campaign_country_map.get(camp_id)
+            if cc:
+                ctx["campaign_country"] = cc
 
         # Meta ad_set or Google ad_group both live on ad_sets table.
         set_id = getattr(r, "ad_set_id", None) or getattr(r, "ad_group_id", None)

@@ -631,6 +631,168 @@ def country_comparison(
         return _api_response(error=str(e))
 
 
+@router.get("/dashboard/country/campaigns")
+def country_campaign_breakdown(
+    country: str = Query(None, description="ISO-2 country code; optional"),
+    platform: str = Query(None),
+    date_from: str = Query(None),
+    date_to: str = Query(None),
+    funnel_stage: str = Query(None),
+    account_id: str = Query(None),
+    branches: str = Query(None),
+    current_user: User = Depends(require_section("analytics")),
+    db: Session = Depends(get_db),
+):
+    """Per-campaign metrics for the active filters.
+
+    Surfaces CR (conversion rate), AOV, CPC alongside ROAS so the user can
+    pinpoint which factor is dragging a campaign's ROAS — wired from the
+    "Open in Country Dashboard" deep-link on Meta recommendation cards.
+    Country is optional: when omitted, all countries under the branch scope
+    are aggregated per campaign.
+    """
+    try:
+        account_id, scoped_ids, err = _resolve_scope(db, current_user, account_id, branches)
+        if err:
+            return _api_response(error=err)
+
+        display_currency, convert_to_vnd = _resolve_currency(db, account_id, scoped_ids)
+
+        if not date_from or not date_to:
+            df, dt = _default_date_range()
+            date_from = date_from or df.isoformat()
+            date_to = date_to or dt.isoformat()
+
+        df = date.fromisoformat(date_from)
+        dt = date.fromisoformat(date_to)
+        prev_from, prev_to = get_prev_period(df, dt)
+
+        def _query(d_from, d_to):
+            q = (
+                db.query(
+                    Campaign.id.label("campaign_id"),
+                    Campaign.name.label("campaign_name"),
+                    Campaign.status.label("campaign_status"),
+                    Campaign.funnel_stage.label("funnel_stage"),
+                    Campaign.ta.label("ta"),
+                    Campaign.platform.label("platform"),
+                    AdAccount.account_name.label("account_name"),
+                    AdAccount.currency.label("currency"),
+                    func.sum(MetricsCache.spend).label("spend"),
+                    func.sum(MetricsCache.impressions).label("impressions"),
+                    func.sum(MetricsCache.clicks).label("clicks"),
+                    func.sum(MetricsCache.conversions).label("conversions"),
+                    func.sum(MetricsCache.revenue).label("revenue"),
+                )
+                .join(Campaign, Campaign.id == MetricsCache.campaign_id)
+                .join(AdAccount, AdAccount.id == Campaign.account_id)
+                .join(AdSet, AdSet.id == MetricsCache.ad_set_id)
+                .filter(MetricsCache.ad_id.is_(None))
+                .filter(MetricsCache.date >= d_from, MetricsCache.date <= d_to)
+            )
+            if country:
+                q = q.filter(AdSet.country == country.upper())
+            else:
+                q = q.filter(
+                    AdSet.country.isnot(None),
+                    AdSet.country != "Unknown",
+                    (func.length(AdSet.country) == 2) | (AdSet.country == "ALL"),
+                )
+            if platform:
+                q = q.filter(MetricsCache.platform == platform)
+            if funnel_stage:
+                q = q.filter(Campaign.funnel_stage == funnel_stage.upper())
+            if account_id:
+                q = q.filter(Campaign.account_id == account_id)
+            elif scoped_ids is not None:
+                q = q.filter(Campaign.account_id.in_(scoped_ids or ["__no_match__"]))
+            return q.group_by(
+                Campaign.id, Campaign.name, Campaign.status, Campaign.funnel_stage,
+                Campaign.ta, Campaign.platform,
+                AdAccount.account_name, AdAccount.currency,
+            ).all()
+
+        def _fold(rows):
+            agg: dict[str, dict] = {}
+            for r in rows:
+                cid = r.campaign_id
+                cur = agg.setdefault(cid, {
+                    "campaign_id": cid,
+                    "campaign_name": r.campaign_name,
+                    "campaign_status": r.campaign_status,
+                    "funnel_stage": r.funnel_stage,
+                    "ta": r.ta,
+                    "platform": r.platform,
+                    "account_name": r.account_name,
+                    "spend": 0.0,
+                    "revenue": 0.0,
+                    "impressions": 0,
+                    "clicks": 0,
+                    "conversions": 0,
+                })
+                fx = _fx(r.currency) if convert_to_vnd else 1
+                cur["spend"] += float(r.spend or 0) * fx
+                cur["revenue"] += float(r.revenue or 0) * fx
+                cur["impressions"] += int(r.impressions or 0)
+                cur["clicks"] += int(r.clicks or 0)
+                cur["conversions"] += int(r.conversions or 0)
+            return agg
+
+        curr = _fold(_query(df, dt))
+        prev = _fold(_query(prev_from, prev_to))
+
+        def _derive(spend, revenue, impressions, clicks, conversions):
+            return {
+                "roas": round(revenue / spend, 4) if spend > 0 else 0,
+                "ctr": round((clicks / impressions) * 100, 4) if impressions > 0 else 0,
+                "cpc": round(spend / clicks, 2) if clicks > 0 else 0,
+                "cpa": round(spend / conversions, 2) if conversions > 0 else 0,
+                # CR (conversion rate) = conversions / clicks. Stored as percent.
+                "cr": round((conversions / clicks) * 100, 4) if clicks > 0 else 0,
+                # AOV = revenue / conversions. Drives the ROAS = CR × AOV / CPC chain.
+                "aov": round(revenue / conversions, 2) if conversions > 0 else 0,
+            }
+
+        items = []
+        for cid, cur in curr.items():
+            d = _derive(
+                cur["spend"], cur["revenue"], cur["impressions"],
+                cur["clicks"], cur["conversions"],
+            )
+            row = {**cur, **d}
+            p = prev.get(cid)
+            if p:
+                p_d = _derive(
+                    p["spend"], p["revenue"], p["impressions"],
+                    p["clicks"], p["conversions"],
+                )
+                row["spend_change"] = calc_change(cur["spend"], p["spend"])
+                row["roas_change"] = calc_change(d["roas"], p_d["roas"])
+                row["cr_change"] = calc_change(d["cr"], p_d["cr"])
+                row["aov_change"] = calc_change(d["aov"], p_d["aov"])
+                row["cpc_change"] = calc_change(d["cpc"], p_d["cpc"])
+                row["conversions_change"] = calc_change(cur["conversions"], p["conversions"])
+            else:
+                row["spend_change"] = None
+                row["roas_change"] = None
+                row["cr_change"] = None
+                row["aov_change"] = None
+                row["cpc_change"] = None
+                row["conversions_change"] = None
+            items.append(row)
+
+        items.sort(key=lambda r: r["spend"], reverse=True)
+
+        return _api_response(data={
+            "items": items,
+            "currency": display_currency,
+            "period": {"from": date_from, "to": date_to},
+            "prev_period": {"from": prev_from.isoformat(), "to": prev_to.isoformat()},
+        })
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
 @router.get("/dashboard/country/countries")
 def list_countries(
     account_id: str = Query(None),
