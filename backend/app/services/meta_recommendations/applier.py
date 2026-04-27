@@ -258,6 +258,62 @@ def _ad_platform_id(db: Session, ad_id: str | None) -> str:
     return row.platform_ad_id
 
 
+def mark_manually_applied(
+    db: Session,
+    recommendation_id: str,
+    *,
+    note: str,
+    applied_by_user_id: str | None,
+) -> MetaRecommendation:
+    """User confirms they applied a guidance-only rec manually (e.g. via
+    Meta Ads Manager). No platform API call — just flips status to 'applied'
+    and writes a ChangeLogEntry with source='manual' so the action shows up
+    in the Activity Log. No ActionLog is written because no system action
+    was performed.
+    """
+    rec = (
+        db.query(MetaRecommendation)
+        .filter(MetaRecommendation.id == recommendation_id)
+        .first()
+    )
+    if rec is None:
+        raise NotApplicable(f"Recommendation {recommendation_id} not found")
+    if rec.status != "pending":
+        raise NotApplicable(f"Recommendation status={rec.status}, cannot mark applied")
+
+    rec.status = "applied"
+    rec.applied_at = datetime.now(timezone.utc)
+    rec.applied_by = applied_by_user_id
+    # action_log_id stays None — manual apply doesn't go through the immutable
+    # action_logs table since no API call was made on the user's behalf.
+
+    log_change(
+        db,
+        category="recommendation_applied",
+        source="manual",
+        triggered_by="manual",
+        title=f"Recommendation manually applied: {rec.title}"[:200],
+        description=(
+            f"{rec.rec_type} · marked as manually applied"
+            + (f" — {note.strip()}" if note and note.strip() else "")
+        ),
+        platform="meta",
+        account_id=rec.account_id,
+        campaign_id=rec.campaign_id,
+        ad_set_id=rec.ad_set_id,
+        ad_id=rec.ad_id,
+        after_value={
+            "rec_type": rec.rec_type,
+            "manual": True,
+            "note": note.strip() if note else None,
+        },
+        metrics_snapshot=rec.metrics_snapshot,
+        author_user_id=applied_by_user_id,
+    )
+    db.commit()
+    return rec
+
+
 def dismiss_recommendation(
     db: Session,
     recommendation_id: str,

@@ -221,6 +221,42 @@ def apply_recommendation(
         return _api_response(error=str(exc))
 
 
+class MarkManualBody(BaseModel):
+    note: str = ""
+
+
+@router.post("/meta/recommendations/{rec_id}/mark-manual")
+def mark_recommendation_manual(
+    rec_id: str,
+    body: MarkManualBody,
+    current_user: User = Depends(require_section("meta_ads", "edit")),
+    db: Session = Depends(get_db),
+):
+    try:
+        rec = db.query(MetaRecommendation).filter(
+            MetaRecommendation.id == rec_id,
+        ).first()
+        if rec is None:
+            raise HTTPException(status_code=404, detail="Recommendation not found")
+        ok, _ids, err = scoped_account_ids(
+            db, current_user, "meta_ads",
+            requested_account_id=rec.account_id, min_level="edit",
+        )
+        if not ok:
+            return _api_response(error=err)
+        updated = applier.mark_manually_applied(
+            db, rec_id, note=body.note, applied_by_user_id=current_user.id,
+        )
+        ctx_map = build_context_map(db, [updated])
+        return _api_response(data=_rec_to_dict(updated, ctx_map.get(updated.id)))
+    except applier.NotApplicable as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        return _api_response(error=str(exc))
+
+
 class DismissBody(BaseModel):
     reason: str = ""
 

@@ -138,22 +138,28 @@ export default function RecommendationItem({
   platform,
   onApply,
   onDismiss,
+  onMarkManual,
   applyBusy,
   dismissBusy,
+  manualBusy,
   defaultExpanded = false,
 }: {
   rec: RecCommonShape
   platform: 'meta' | 'google'
   onApply: (id: string) => Promise<void> | void
   onDismiss: (id: string, reason: string) => Promise<void> | void
+  onMarkManual?: (id: string, note: string) => Promise<void> | void
   applyBusy: boolean
   dismissBusy: boolean
+  manualBusy?: boolean
   defaultExpanded?: boolean
 }) {
   const [expanded, setExpanded] = useState(defaultExpanded)
   const [confirmWarning, setConfirmWarning] = useState(false)
   const [showDismiss, setShowDismiss] = useState(false)
   const [dismissReason, setDismissReason] = useState('')
+  const [showManual, setShowManual] = useState(false)
+  const [manualNote, setManualNote] = useState('')
 
   const ctx = rec.context || {}
   const currency = ctx.currency
@@ -296,7 +302,7 @@ export default function RecommendationItem({
                     </label>
                   ) : (
                     <p className="text-xs text-gray-500">
-                      This is guidance only — apply manually in {platform === 'meta' ? 'Meta Ads Manager' : 'Google Ads UI'}.
+                      Guidance only — apply manually in {platform === 'meta' ? 'Meta Ads Manager' : 'Google Ads UI'}, then click <span className="font-semibold">Đã Manual Apply</span> to log it.
                     </p>
                   )}
                 </div>
@@ -308,6 +314,15 @@ export default function RecommendationItem({
                   >
                     Dismiss
                   </button>
+                  {!rec.auto_applicable && onMarkManual && (
+                    <button
+                      onClick={() => setShowManual(v => !v)}
+                      className="px-3 py-1.5 text-xs font-semibold text-violet-700 bg-violet-50 border border-violet-200 rounded hover:bg-violet-100"
+                      title="Mark this guidance-only recommendation as already applied manually"
+                    >
+                      Đã Manual Apply
+                    </button>
+                  )}
                   {rec.auto_applicable && (
                     <button
                       onClick={() => onApply(rec.id)}
@@ -317,6 +332,36 @@ export default function RecommendationItem({
                       {applyBusy ? 'Launching…' : 'Launch'}
                     </button>
                   )}
+                </div>
+              </div>
+            )}
+
+            {showManual && isPending && onMarkManual && (
+              <div className="bg-violet-50 border border-violet-200 rounded p-3">
+                <label className="block text-[10px] uppercase tracking-wider text-violet-700 font-semibold mb-1">
+                  Note (optional)
+                </label>
+                <textarea
+                  value={manualNote}
+                  onChange={e => setManualNote(e.target.value)}
+                  placeholder="What did you change in the platform UI?"
+                  className="w-full text-sm border border-violet-200 rounded p-2 resize-none bg-white"
+                  rows={2}
+                />
+                <div className="mt-2 flex justify-end gap-2">
+                  <button
+                    onClick={() => { setShowManual(false); setManualNote('') }}
+                    className="px-3 py-1 text-xs text-gray-600 hover:text-gray-900"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={() => onMarkManual(rec.id, manualNote.trim())}
+                    disabled={!!manualBusy}
+                    className="px-3 py-1 text-xs font-semibold text-white bg-violet-600 rounded hover:bg-violet-700 disabled:opacity-40"
+                  >
+                    {manualBusy ? 'Saving…' : 'Confirm manual apply'}
+                  </button>
                 </div>
               </div>
             )}

@@ -288,6 +288,58 @@ def _build_budget_rebalance_plan(
     return plan
 
 
+def mark_manually_applied(
+    db: Session,
+    recommendation_id: str,
+    *,
+    note: str,
+    applied_by_user_id: str | None,
+) -> GoogleRecommendation:
+    """User confirms they applied a guidance-only rec manually (e.g. via
+    the Google Ads UI). Flips status to 'applied' and writes a manual
+    ChangeLogEntry. No ActionLog written — no API call was made.
+    """
+    rec = (
+        db.query(GoogleRecommendation)
+        .filter(GoogleRecommendation.id == recommendation_id)
+        .first()
+    )
+    if rec is None:
+        raise NotApplicable(f"Recommendation {recommendation_id} not found")
+    if rec.status != "pending":
+        raise NotApplicable(f"Recommendation status={rec.status}, cannot mark applied")
+
+    rec.status = "applied"
+    rec.applied_at = datetime.now(timezone.utc)
+    rec.applied_by = applied_by_user_id
+
+    log_change(
+        db,
+        category="recommendation_applied",
+        source="manual",
+        triggered_by="manual",
+        title=f"Recommendation manually applied: {rec.title}"[:200],
+        description=(
+            f"{rec.rec_type} · marked as manually applied"
+            + (f" — {note.strip()}" if note and note.strip() else "")
+        ),
+        platform="google",
+        account_id=rec.account_id,
+        campaign_id=rec.campaign_id,
+        ad_set_id=rec.ad_group_id,
+        ad_id=rec.ad_id,
+        after_value={
+            "rec_type": rec.rec_type,
+            "manual": True,
+            "note": note.strip() if note else None,
+        },
+        metrics_snapshot=rec.metrics_snapshot,
+        author_user_id=applied_by_user_id,
+    )
+    db.commit()
+    return rec
+
+
 def dismiss_recommendation(
     db: Session, recommendation_id: str, *, reason: str, dismissed_by_user_id: str | None,
 ) -> GoogleRecommendation:

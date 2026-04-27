@@ -40,7 +40,7 @@ export default function RecommendationsPage() {
   const [campaignTypeFilter, setCampaignTypeFilter] = useState<CampaignType | 'all'>('all')
 
   const [busyId, setBusyId] = useState<string | null>(null)
-  const [busyMode, setBusyMode] = useState<'apply' | 'dismiss' | null>(null)
+  const [busyMode, setBusyMode] = useState<'apply' | 'dismiss' | 'manual' | null>(null)
 
   useEffect(() => {
     fetch(`${API_BASE}/api/accounts`, { credentials: 'include' })
@@ -94,6 +94,28 @@ export default function RecommendationsPage() {
       const res = await r.json()
       if (!r.ok || res.success === false) {
         alert(res.detail || res.error || `Apply failed (HTTP ${r.status})`)
+        return
+      }
+      fetchList()
+    } finally {
+      setBusyId(null)
+      setBusyMode(null)
+    }
+  }
+
+  const onMarkManual = async (id: string, note: string) => {
+    setBusyId(id)
+    setBusyMode('manual')
+    try {
+      const r = await fetch(`${API_BASE}/api/google/recommendations/${id}/mark-manual`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ note }),
+      })
+      const res = await r.json()
+      if (!r.ok || res.success === false) {
+        alert(res.detail || res.error || `Mark manual failed (HTTP ${r.status})`)
         return
       }
       fetchList()
@@ -218,8 +240,10 @@ export default function RecommendationsPage() {
             platform="google"
             onApply={onApply}
             onDismiss={onDismiss}
+            onMarkManual={onMarkManual}
             applyBusy={busyId === rec.id && busyMode === 'apply'}
             dismissBusy={busyId === rec.id && busyMode === 'dismiss'}
+            manualBusy={busyId === rec.id && busyMode === 'manual'}
           />
         ))}
       </div>
