@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback, useRef, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { TrendingUp, TrendingDown, ArrowUp, ArrowDown, ArrowUpDown, ChevronRight, Activity, BarChart3, Sparkles } from 'lucide-react'
 import { apiFetch } from '@/lib/api'
@@ -138,7 +138,7 @@ function getDateRange(preset: string): { from: string; to: string } {
 
 const fmt = (n: number) => new Intl.NumberFormat('vi-VN', { maximumFractionDigits: 0 }).format(n)
 
-export default function CountryDashboard() {
+function CountryDashboardInner() {
   const search = useSearchParams()
   // Deep-link inputs from /meta/recommendations card. The page reads these
   // once on mount, then ignores subsequent URL changes so user filter edits
@@ -783,6 +783,14 @@ function CampaignBreakdownTable({
         </table>
       </div>
     </div>
+  )
+}
+
+export default function CountryDashboard() {
+  return (
+    <Suspense fallback={null}>
+      <CountryDashboardInner />
+    </Suspense>
   )
 }
 
