@@ -169,10 +169,16 @@ def _aggregate_country_rows(rows, convert_to_vnd: bool) -> dict:
         spend = cur["total_spend"]
         revenue = cur["total_revenue"]
         imp = cur["impressions"]
+        clicks = cur["clicks"]
         conv = cur["conversions"]
         cur["roas"] = round(revenue / spend, 2) if spend > 0 else 0
-        cur["ctr"] = round((cur["clicks"] / imp) * 100, 2) if imp > 0 else 0
+        cur["ctr"] = round((clicks / imp) * 100, 2) if imp > 0 else 0
         cur["cpa"] = round(spend / conv, 2) if conv > 0 else 0
+        # ROAS = CR x AOV / CPC. Carrying these on the KPI row lets the
+        # frontend show period-over-period deltas alongside Spend / ROAS.
+        cur["cr"] = round((conv / clicks) * 100, 2) if clicks > 0 else 0
+        cur["aov"] = round(revenue / conv, 2) if conv > 0 else 0
+        cur["cpc"] = round(spend / clicks, 2) if clicks > 0 else 0
     return agg
 
 
@@ -230,6 +236,9 @@ def country_kpi_summary(
                 kpi["roas_change"] = calc_change(kpi["roas"], prev_kpi["roas"])
                 kpi["ctr_change"] = calc_change(kpi["ctr"], prev_kpi["ctr"])
                 kpi["cpa_change"] = calc_change(kpi["cpa"], prev_kpi["cpa"])
+                kpi["cr_change"] = calc_change(kpi["cr"], prev_kpi["cr"])
+                kpi["aov_change"] = calc_change(kpi["aov"], prev_kpi["aov"])
+                kpi["cpc_change"] = calc_change(kpi["cpc"], prev_kpi["cpc"])
                 kpi["conversions_change"] = calc_change(kpi["conversions"], prev_kpi["conversions"])
             else:
                 kpi["spend_change"] = None
@@ -237,6 +246,9 @@ def country_kpi_summary(
                 kpi["roas_change"] = None
                 kpi["ctr_change"] = None
                 kpi["cpa_change"] = None
+                kpi["cr_change"] = None
+                kpi["aov_change"] = None
+                kpi["cpc_change"] = None
                 kpi["conversions_change"] = None
             items.append(kpi)
 

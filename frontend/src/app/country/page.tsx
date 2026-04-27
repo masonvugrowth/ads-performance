@@ -57,6 +57,9 @@ type CountryKpi = {
   roas: number
   ctr: number
   cpa: number
+  cr: number
+  aov: number
+  cpc: number
   impressions: number
   clicks: number
   conversions: number
@@ -66,6 +69,9 @@ type CountryKpi = {
   roas_change: number | null
   ctr_change: number | null
   cpa_change: number | null
+  cr_change: number | null
+  aov_change: number | null
+  cpc_change: number | null
   conversions_change: number | null
 }
 
@@ -432,10 +438,13 @@ function CountryDashboardInner() {
               { label: `CPA (${responseCurrency})`, value: selectedKpi.conversions ? fmtMoney(Math.round(selectedKpi.total_spend / selectedKpi.conversions), responseCurrency) : '--', change: country ? kpiData.find(k => k.country_code === country)?.cpa_change ?? null : null, inverse: true },
               { label: 'Campaigns', value: String(selectedKpi.campaign_count), change: null, inverse: false },
             ]
+            // Period-over-period changes only flow through when a single
+            // country is selected — same convention as the headline row.
+            const countryKpi = country ? kpiData.find(k => k.country_code === country) : null
             const decomp = [
-              { label: 'CR (Conversion Rate)', value: cr ? cr.toFixed(2) + '%' : '--', change: null, inverse: false },
-              { label: `AOV (${responseCurrency})`, value: aov ? fmtMoney(Math.round(aov), responseCurrency) : '--', change: null, inverse: false },
-              { label: `CPC (${responseCurrency})`, value: cpc ? fmtMoney(Math.round(cpc), responseCurrency) : '--', change: null, inverse: true },
+              { label: 'CR (Conversion Rate)', value: cr ? cr.toFixed(2) + '%' : '--', change: countryKpi?.cr_change ?? null, inverse: false },
+              { label: `AOV (${responseCurrency})`, value: aov ? fmtMoney(Math.round(aov), responseCurrency) : '--', change: countryKpi?.aov_change ?? null, inverse: false },
+              { label: `CPC (${responseCurrency})`, value: cpc ? fmtMoney(Math.round(cpc), responseCurrency) : '--', change: countryKpi?.cpc_change ?? null, inverse: true },
             ]
             const renderCard = (kpi: typeof headline[number]) => (
               <div key={kpi.label} className="bg-white rounded-xl border border-gray-200 p-5">
