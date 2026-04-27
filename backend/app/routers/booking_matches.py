@@ -256,6 +256,30 @@ def booking_matches_summary(
         return _api_response(error=str(e))
 
 
+@router.post("/booking-matches/cloudbeds-ping")
+def cloudbeds_ping(
+    branch: str = Query("Saigon"),
+    days_back: int = Query(7, ge=1, le=90),
+    current_user: User = Depends(require_section("analytics", "edit")),
+    db: Session = Depends(get_db),
+):
+    """Diagnostic: probe Cloudbeds API for a branch via the logged-in session.
+
+    Convenience wrapper around services.cloudbeds_client.probe — same payload
+    as the internal-secret-protected endpoint but reachable from the browser
+    while logged in. Returns which auth flavour worked + a sample reservation.
+    """
+    try:
+        from app.services.cloudbeds_client import probe
+        date_to = date.today()
+        date_from = date_to - timedelta(days=days_back)
+        return _api_response(data=probe(branch, date_from, date_to))
+    except ValueError as e:
+        return _api_response(error=str(e))
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
 @router.post("/booking-matches/run")
 def trigger_match_run(
     date_from: str = Query(None),
