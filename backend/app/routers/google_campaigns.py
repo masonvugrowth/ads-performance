@@ -988,6 +988,100 @@ def get_time_of_day_insight(
         return _err(str(e), 500)
 
 
+@router.get("/google/campaigns/{campaign_id}/insights/audiences")
+def get_audiences_insight(
+    campaign_id: str,
+    date_from: str | None = Query(None),
+    date_to: str | None = Query(None),
+    current_user: User = Depends(require_section("google_ads")),
+    db: Session = Depends(get_db),
+):
+    """Audience performance.
+
+    Search/Display: per-audience metrics via ad_group_audience_view.
+    PMax: list of attached audience signals (no per-signal metrics —
+    Google doesn't expose them for PMax).
+    """
+    try:
+        from app.services import google_insights, google_insights_client
+
+        campaign, customer_id, currency, err = _resolve_campaign_for_insights(db, campaign_id, current_user)
+        if err:
+            return _err(err, 404 if err == "Campaign not found" else 403)
+
+        df, dt = _parse_date_range(date_from, date_to)
+
+        if campaign.objective == "PERFORMANCE_MAX":
+            signals = google_insights_client.fetch_pmax_audience_signals(
+                customer_id, campaign.platform_campaign_id,
+            )
+            return _ok({
+                "mode": "pmax_signals",
+                "signals": signals,
+                "signal_count": len(signals),
+                "currency": currency,
+                "date_from": df.isoformat(),
+                "date_to": dt.isoformat(),
+            })
+
+        rows = google_insights_client.fetch_audience_metrics(
+            customer_id, campaign.platform_campaign_id, df, dt,
+        )
+        diagnosis = google_insights.diagnose_audiences(rows)
+        return _ok({
+            "mode": "audience_metrics",
+            **diagnosis,
+            "currency": currency,
+            "date_from": df.isoformat(),
+            "date_to": dt.isoformat(),
+        })
+    except Exception as e:
+        logger.exception("audiences insight failed for %s", campaign_id)
+        return _err(str(e), 500)
+
+
+@router.get("/google/campaigns/{campaign_id}/insights/placements")
+def get_placements_insight(
+    campaign_id: str,
+    date_from: str | None = Query(None),
+    date_to: str | None = Query(None),
+    current_user: User = Depends(require_section("google_ads")),
+    db: Session = Depends(get_db),
+):
+    """Where the ad served — only meaningful for PMax / Display / Video."""
+    try:
+        from app.services import google_insights, google_insights_client
+
+        campaign, customer_id, currency, err = _resolve_campaign_for_insights(db, campaign_id, current_user)
+        if err:
+            return _err(err, 404 if err == "Campaign not found" else 403)
+
+        if campaign.objective == "SEARCH":
+            return _ok({
+                "applicable": False,
+                "reason": "Search campaigns don't have placements (text ads on Google SERP only).",
+                "placements": [], "junk": [], "winners": [],
+                "youtube_awareness": [], "by_type": {},
+                "currency": currency,
+            })
+
+        df, dt = _parse_date_range(date_from, date_to)
+        rows = google_insights_client.fetch_placement_metrics(
+            customer_id, campaign.platform_campaign_id, df, dt,
+        )
+        diagnosis = google_insights.diagnose_placements(rows)
+        return _ok({
+            "applicable": True,
+            **diagnosis,
+            "currency": currency,
+            "date_from": df.isoformat(),
+            "date_to": dt.isoformat(),
+        })
+    except Exception as e:
+        logger.exception("placements insight failed for %s", campaign_id)
+        return _err(str(e), 500)
+
+
 @router.post("/google/campaigns/{campaign_id}/insights/narrative")
 def stream_combined_narrative_endpoint(
     campaign_id: str,
@@ -1024,6 +1118,8 @@ def stream_combined_narrative_endpoint(
         "devices": body.get("devices"),
         "locations": body.get("locations"),
         "time_of_day": body.get("time_of_day"),
+        "audiences": body.get("audiences"),
+        "placements": body.get("placements"),
     }
 
     def stream_sse():

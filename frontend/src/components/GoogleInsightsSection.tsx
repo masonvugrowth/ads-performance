@@ -105,6 +105,73 @@ interface TimeData {
   peak_hours: HourRollup[]
 }
 
+interface AudienceRow {
+  audience: string
+  bucket: string
+  criterion_type: string
+  spend: number
+  clicks: number
+  conversions: number
+  cvr: number
+  roas: number
+  spend_share: number
+  flags: string[]
+}
+
+interface AudienceBucketAgg {
+  audience_count: number
+  spend: number
+  clicks: number
+  conversions: number
+  cvr: number
+  roas: number
+}
+
+interface PMaxSignal {
+  asset_group_name: string
+  signal_type: string
+  value: string
+}
+
+interface AudiencesData {
+  mode: 'audience_metrics' | 'pmax_signals'
+  audiences?: AudienceRow[]
+  by_bucket?: Record<string, AudienceBucketAgg>
+  winners?: AudienceRow[]
+  weak?: AudienceRow[]
+  break_out?: AudienceRow[]
+  baseline_cvr?: number
+  signals?: PMaxSignal[]
+  signal_count?: number
+}
+
+interface PlacementRow {
+  placement: string
+  display_name: string
+  target_url: string
+  placement_type: string
+  placement_type_raw: string
+  spend: number
+  impressions: number
+  clicks: number
+  conversions: number
+  cvr: number
+  roas: number
+  spend_share: number
+  flags: string[]
+}
+
+interface PlacementsData {
+  applicable?: boolean
+  reason?: string
+  placements: PlacementRow[]
+  junk: PlacementRow[]
+  winners: PlacementRow[]
+  youtube_awareness: PlacementRow[]
+  by_type: Record<string, { placement_count: number; spend: number; conversions: number; cvr: number; roas: number }>
+  total_placements?: number
+}
+
 const INTENT_COLORS: Record<string, string> = {
   HIGH: 'bg-green-100 text-green-700',
   MID: 'bg-blue-100 text-blue-700',
@@ -122,6 +189,26 @@ const FLAG_COLORS: Record<string, string> = {
   MOBILE_UX_BROKEN: 'bg-red-100 text-red-700',
   CROSS_DEVICE_RESEARCH: 'bg-blue-100 text-blue-700',
   HEALTHY: 'bg-green-100 text-green-700',
+  STRONG_AUDIENCE: 'bg-green-100 text-green-700',
+  WEAK_AUDIENCE: 'bg-red-100 text-red-700',
+  BREAK_OUT_CANDIDATE: 'bg-purple-100 text-purple-700',
+  REMARKETING_UNDERPERFORMING: 'bg-orange-100 text-orange-700',
+  JUNK_APP: 'bg-red-100 text-red-700',
+  JUNK_CONTENT: 'bg-red-100 text-red-700',
+  EXCLUDE_CANDIDATE: 'bg-red-100 text-red-700',
+  YT_AWARENESS_ONLY: 'bg-yellow-100 text-yellow-700',
+}
+
+const BUCKET_COLORS: Record<string, string> = {
+  REMARKETING: 'bg-purple-100 text-purple-700',
+  IN_MARKET: 'bg-blue-100 text-blue-700',
+  AFFINITY: 'bg-cyan-100 text-cyan-700',
+  INTEREST: 'bg-cyan-100 text-cyan-700',
+  DEMOGRAPHIC: 'bg-pink-100 text-pink-700',
+  LIFE_EVENT: 'bg-amber-100 text-amber-700',
+  CUSTOM: 'bg-indigo-100 text-indigo-700',
+  COMBINED: 'bg-indigo-100 text-indigo-700',
+  OTHER: 'bg-gray-100 text-gray-600',
 }
 
 const fmtNum = (n: number) => n.toLocaleString('en-US', { maximumFractionDigits: 2 })
@@ -133,6 +220,8 @@ export default function GoogleInsightsSection({ campaignId, campaignType, dateFr
   const [devices, setDevices] = useState<PanelState<DevicesData>>({ status: 'idle', data: null, error: null })
   const [locations, setLocations] = useState<PanelState<LocationsData>>({ status: 'idle', data: null, error: null })
   const [timeOfDay, setTimeOfDay] = useState<PanelState<TimeData>>({ status: 'idle', data: null, error: null })
+  const [audiences, setAudiences] = useState<PanelState<AudiencesData>>({ status: 'idle', data: null, error: null })
+  const [placements, setPlacements] = useState<PanelState<PlacementsData>>({ status: 'idle', data: null, error: null })
   const [currency, setCurrency] = useState<string>('USD')
   const [narrative, setNarrative] = useState<string>('')
   const [narrativeLoading, setNarrativeLoading] = useState(false)
@@ -173,6 +262,8 @@ export default function GoogleInsightsSection({ campaignId, campaignType, dateFr
     fetchPanel<DevicesData>(`/api/google/campaigns/${campaignId}/insights/devices`, setDevices)
     fetchPanel<LocationsData>(`/api/google/campaigns/${campaignId}/insights/locations`, setLocations)
     fetchPanel<TimeData>(`/api/google/campaigns/${campaignId}/insights/time-of-day`, setTimeOfDay)
+    fetchPanel<AudiencesData>(`/api/google/campaigns/${campaignId}/insights/audiences`, setAudiences)
+    fetchPanel<PlacementsData>(`/api/google/campaigns/${campaignId}/insights/placements`, setPlacements)
     setNarrative('')
     setNarrativeError(null)
     return () => {
@@ -181,7 +272,13 @@ export default function GoogleInsightsSection({ campaignId, campaignType, dateFr
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [campaignId, dateFrom, dateTo])
 
-  const allReady = searchTerms.status === 'ready' && devices.status === 'ready' && locations.status === 'ready' && timeOfDay.status === 'ready'
+  const allReady =
+    searchTerms.status === 'ready' &&
+    devices.status === 'ready' &&
+    locations.status === 'ready' &&
+    timeOfDay.status === 'ready' &&
+    audiences.status === 'ready' &&
+    placements.status === 'ready'
 
   const generateNarrative = async () => {
     if (!allReady) return
@@ -200,6 +297,8 @@ export default function GoogleInsightsSection({ campaignId, campaignType, dateFr
         devices: devices.data,
         locations: locations.data,
         time_of_day: timeOfDay.data,
+        audiences: audiences.data,
+        placements: placements.data,
       }
       const res = await fetch(`${API_BASE}/api/google/campaigns/${campaignId}/insights/narrative`, {
         method: 'POST',
@@ -264,6 +363,12 @@ export default function GoogleInsightsSection({ campaignId, campaignType, dateFr
 
       {/* Time of Day Panel */}
       <TimePanel state={timeOfDay} currency={currency} />
+
+      {/* Audience Panel */}
+      <AudiencesPanel state={audiences} currency={currency} campaignType={campaignType} />
+
+      {/* Placement Panel */}
+      <PlacementsPanel state={placements} currency={currency} />
 
       {/* Combined Narrative */}
       <div className="bg-white rounded-xl border border-gray-200 p-5">
@@ -686,6 +791,250 @@ function TimePanel({ state, currency }: { state: PanelState<TimeData>; currency:
         </div>
       )}
     </PanelShell>
+  )
+}
+
+function AudiencesPanel({ state, currency, campaignType }: { state: PanelState<AudiencesData>; currency: string; campaignType: string }) {
+  const data = state.data
+  const isPMax = campaignType === 'PERFORMANCE_MAX'
+  return (
+    <PanelShell
+      title="Audience Segments"
+      subtitle={isPMax
+        ? "PMax audience signals (no per-signal metrics — Google doesn't expose them)"
+        : "Use Observation mode to compare — don't restrict reach"}
+      state={state}
+    >
+      {data?.mode === 'pmax_signals' && (
+        <div>
+          {(!data.signals || data.signals.length === 0) ? (
+            <div className="bg-orange-50 rounded-lg p-3 text-xs">
+              <p className="font-semibold text-orange-700 mb-1">⚠️ No audience signals attached</p>
+              <p className="text-gray-600">PMax campaigns without audience signals learn slower. Attach Customer Match, remarketing, or custom-intent audiences to your asset groups.</p>
+            </div>
+          ) : (
+            <div>
+              <p className="text-xs text-gray-500 mb-2">{data.signal_count} signal{data.signal_count === 1 ? '' : 's'} attached across asset groups:</p>
+              <div className="space-y-1">
+                {data.signals.map((s, i) => (
+                  <div key={i} className="flex items-center justify-between text-xs border-b border-gray-100 py-1.5">
+                    <span className="text-gray-800">{s.asset_group_name}</span>
+                    <div className="flex items-center gap-2">
+                      <span className={`px-1.5 py-0.5 rounded ${s.signal_type === 'AUDIENCE' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}`}>
+                        {s.signal_type}
+                      </span>
+                      <span className="font-mono text-gray-500">{s.value}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {data?.mode === 'audience_metrics' && (
+        <div className="space-y-4">
+          {(!data.audiences || data.audiences.length === 0) ? (
+            <div className="bg-orange-50 rounded-lg p-3 text-xs">
+              <p className="font-semibold text-orange-700 mb-1">⚠️ No audiences attached</p>
+              <p className="text-gray-600">Add audiences in <strong>Observation mode</strong> (In-market Travel/Hotels, Affinity Backpackers, your remarketing lists) to compare performance — without restricting reach.</p>
+            </div>
+          ) : (
+            <>
+              {/* Bucket summary */}
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                {Object.entries(data.by_bucket || {}).map(([bucket, agg]) => (
+                  <div key={bucket} className="border border-gray-100 rounded-lg p-3">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${BUCKET_COLORS[bucket] || 'bg-gray-100 text-gray-600'}`}>
+                        {bucket.replace(/_/g, ' ')}
+                      </span>
+                      <span className="text-[10px] text-gray-400">{agg.audience_count} aud.</span>
+                    </div>
+                    <div className="text-xs text-gray-600">
+                      <div>{fmtCur(agg.spend, currency)} · CVR {fmtPct(agg.cvr)}</div>
+                      <div className="text-gray-400">{agg.roas.toFixed(2)}x ROAS</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <p className="text-xs text-gray-400">Baseline CVR: {fmtPct(data.baseline_cvr || 0)}</p>
+
+              {(data.winners && data.winners.length > 0) && (
+                <AudienceList title="✅ Strong segments — break out into separate campaigns + raise bids" rows={data.winners} currency={currency} accent="green" />
+              )}
+              {(data.break_out && data.break_out.length > 0) && (
+                <AudienceList title="🚀 Break-out candidates (≥10% spend share, ROAS ≥ 2x)" rows={data.break_out} currency={currency} accent="purple" />
+              )}
+              {(data.weak && data.weak.length > 0) && (
+                <AudienceList title="❌ Weak segments — too broad / not aligned with niche" rows={data.weak} currency={currency} accent="red" />
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </PanelShell>
+  )
+}
+
+function AudienceList({ title, rows, currency, accent }: {
+  title: string
+  rows: AudienceRow[]
+  currency: string
+  accent: 'red' | 'green' | 'purple'
+}) {
+  const accentBg = accent === 'red' ? 'bg-red-50' : accent === 'green' ? 'bg-green-50' : 'bg-purple-50'
+  return (
+    <div className={`rounded-lg ${accentBg} p-3`}>
+      <p className="text-xs font-semibold text-gray-700 mb-2">{title}</p>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead className="text-gray-500">
+            <tr>
+              <th className="text-left px-2 py-1 font-medium">Audience</th>
+              <th className="text-left px-2 py-1 font-medium">Bucket</th>
+              <th className="text-right px-2 py-1 font-medium">Spend</th>
+              <th className="text-right px-2 py-1 font-medium">Spend %</th>
+              <th className="text-right px-2 py-1 font-medium">Conv.</th>
+              <th className="text-right px-2 py-1 font-medium">CVR</th>
+              <th className="text-right px-2 py-1 font-medium">ROAS</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-white/50">
+            {rows.slice(0, 10).map((r, i) => (
+              <tr key={i}>
+                <td className="px-2 py-1 text-gray-800">{r.audience}</td>
+                <td className="px-2 py-1">
+                  <span className={`px-1.5 py-0.5 rounded ${BUCKET_COLORS[r.bucket] || 'bg-gray-100 text-gray-600'}`}>
+                    {r.bucket.replace(/_/g, ' ')}
+                  </span>
+                </td>
+                <td className="px-2 py-1 text-right">{fmtCur(r.spend, currency)}</td>
+                <td className="px-2 py-1 text-right">{(r.spend_share * 100).toFixed(1)}%</td>
+                <td className="px-2 py-1 text-right">{fmtNum(r.conversions)}</td>
+                <td className="px-2 py-1 text-right">{fmtPct(r.cvr)}</td>
+                <td className="px-2 py-1 text-right">{r.roas.toFixed(2)}x</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+function PlacementsPanel({ state, currency }: { state: PanelState<PlacementsData>; currency: string }) {
+  const data = state.data
+  return (
+    <PanelShell
+      title="Placements"
+      subtitle="Where the ad served — apps, websites, YouTube channels"
+      state={state}
+    >
+      {data?.applicable === false && (
+        <p className="text-sm text-gray-400">{data.reason}</p>
+      )}
+      {data && data.applicable !== false && (data.total_placements ?? data.placements.length) === 0 && (
+        <p className="text-sm text-gray-400">No placement data in selected range.</p>
+      )}
+      {data && data.applicable !== false && (data.total_placements ?? data.placements.length) > 0 && (
+        <div className="space-y-4">
+          {/* By placement-type rollup */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+            {Object.entries(data.by_type).map(([type, agg]) => (
+              <div key={type} className="border border-gray-100 rounded-lg p-3">
+                <p className="text-xs font-semibold text-gray-600">{type}</p>
+                <p className="text-[11px] text-gray-500 mt-1">{agg.placement_count} · {fmtCur(agg.spend, currency)}</p>
+                <p className="text-[11px] text-gray-400">CVR {fmtPct(agg.cvr)} · {agg.roas.toFixed(2)}x</p>
+              </div>
+            ))}
+          </div>
+
+          {(data.junk && data.junk.length > 0) && (
+            <PlacementList
+              title="❌ Junk placements — exclude immediately"
+              rows={data.junk}
+              currency={currency}
+              accent="red"
+            />
+          )}
+          {(data.youtube_awareness && data.youtube_awareness.length > 0) && (
+            <PlacementList
+              title="📺 YouTube awareness only — high impressions, low CVR"
+              rows={data.youtube_awareness}
+              currency={currency}
+              accent="yellow"
+            />
+          )}
+          {(data.winners && data.winners.length > 0) && (
+            <PlacementList
+              title="✅ Profitable placements"
+              rows={data.winners}
+              currency={currency}
+              accent="green"
+            />
+          )}
+
+          <p className="text-xs text-gray-400">{data.total_placements ?? data.placements.length} placements analyzed.</p>
+        </div>
+      )}
+    </PanelShell>
+  )
+}
+
+function PlacementList({ title, rows, currency, accent }: {
+  title: string
+  rows: PlacementRow[]
+  currency: string
+  accent: 'red' | 'green' | 'yellow'
+}) {
+  const accentBg = accent === 'red' ? 'bg-red-50' : accent === 'green' ? 'bg-green-50' : 'bg-yellow-50'
+  return (
+    <div className={`rounded-lg ${accentBg} p-3`}>
+      <p className="text-xs font-semibold text-gray-700 mb-2">{title}</p>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead className="text-gray-500">
+            <tr>
+              <th className="text-left px-2 py-1 font-medium">Placement</th>
+              <th className="text-left px-2 py-1 font-medium">Type</th>
+              <th className="text-right px-2 py-1 font-medium">Spend</th>
+              <th className="text-right px-2 py-1 font-medium">Impr.</th>
+              <th className="text-right px-2 py-1 font-medium">Clicks</th>
+              <th className="text-right px-2 py-1 font-medium">Conv.</th>
+              <th className="text-right px-2 py-1 font-medium">ROAS</th>
+              <th className="text-left px-2 py-1 font-medium">Flags</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-white/50">
+            {rows.slice(0, 10).map((r, i) => (
+              <tr key={i}>
+                <td className="px-2 py-1 text-gray-800 truncate max-w-[240px]" title={r.display_name}>
+                  {r.target_url ? (
+                    <a href={r.target_url} target="_blank" rel="noopener noreferrer" className="hover:underline text-blue-700">
+                      {r.display_name}
+                    </a>
+                  ) : (
+                    r.display_name
+                  )}
+                </td>
+                <td className="px-2 py-1 text-gray-600">{r.placement_type}</td>
+                <td className="px-2 py-1 text-right">{fmtCur(r.spend, currency)}</td>
+                <td className="px-2 py-1 text-right">{fmtNum(r.impressions)}</td>
+                <td className="px-2 py-1 text-right">{fmtNum(r.clicks)}</td>
+                <td className="px-2 py-1 text-right">{fmtNum(r.conversions)}</td>
+                <td className="px-2 py-1 text-right">{r.roas.toFixed(2)}x</td>
+                <td className="px-2 py-1">
+                  <div className="flex gap-1 flex-wrap">{r.flags.map(f => <FlagBadge key={f} flag={f} />)}</div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
   )
 }
 

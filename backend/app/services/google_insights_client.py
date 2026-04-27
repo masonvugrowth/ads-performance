@@ -383,3 +383,202 @@ def fetch_hourly_metrics(
         results.append(v)
     results.sort(key=lambda r: (_DAY_ORDER.index(r["day_of_week"]) if r["day_of_week"] in _DAY_ORDER else 99, r["hour"]))
     return results
+
+
+# ── Audiences ───────────────────────────────────────────────
+
+
+def fetch_audience_metrics(
+    customer_id: str,
+    platform_campaign_id: str,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> list[dict]:
+    """Fetch audience performance for Search/Display campaigns.
+
+    ad_group_audience_view exposes per-audience metrics when audiences are
+    attached at ad-group level (Observation or Targeting mode).
+    PMax campaigns don't surface this — use fetch_pmax_audience_signals.
+    """
+    customer_id = customer_id.replace("-", "")
+    date_from, date_to = _default_range(date_from, date_to)
+    client = _get_client()
+
+    query = f"""
+        SELECT
+            ad_group_criterion.criterion_id,
+            ad_group_criterion.display_name,
+            ad_group_criterion.type,
+            ad_group_criterion.user_list.user_list,
+            ad_group_criterion.user_interest.user_interest_category,
+            metrics.cost_micros,
+            metrics.impressions,
+            metrics.clicks,
+            metrics.conversions,
+            metrics.conversions_value
+        FROM ad_group_audience_view
+        WHERE campaign.id = {platform_campaign_id}
+            AND segments.date BETWEEN '{date_from.isoformat()}' AND '{date_to.isoformat()}'
+    """
+    try:
+        rows = _search_stream(client, customer_id, query)
+    except GoogleAdsException:
+        logger.exception("ad_group_audience_view failed for %s", platform_campaign_id)
+        return []
+
+    bucket: dict[str, dict] = {}
+    for row in rows:
+        crit = row.ad_group_criterion
+        crit_type = _enum_name(crit.type_) if crit.type_ else "UNKNOWN"
+        display = crit.display_name or _audience_label_from_resource(crit)
+        key = display or f"criterion_{crit.criterion_id}"
+        m = _row_to_metrics(row.metrics)
+        cur = bucket.setdefault(key, {
+            "audience": display, "criterion_type": crit_type,
+            "spend": 0.0, "impressions": 0, "clicks": 0,
+            "conversions": 0.0, "revenue": 0.0,
+        })
+        cur["spend"] += m["spend"]
+        cur["impressions"] += m["impressions"]
+        cur["clicks"] += m["clicks"]
+        cur["conversions"] += m["conversions"]
+        cur["revenue"] += m["revenue"]
+
+    results = []
+    for v in bucket.values():
+        clicks = v["clicks"]
+        impr = v["impressions"]
+        conv = v["conversions"]
+        spend = v["spend"]
+        v["ctr"] = (clicks / impr * 100) if impr > 0 else 0.0
+        v["cvr"] = (conv / clicks * 100) if clicks > 0 else 0.0
+        v["cpc"] = (spend / clicks) if clicks > 0 else None
+        v["cpa"] = (spend / conv) if conv > 0 else None
+        v["roas"] = (v["revenue"] / spend) if spend > 0 else 0.0
+        results.append(v)
+    results.sort(key=lambda r: r["spend"], reverse=True)
+    return results
+
+
+def _audience_label_from_resource(crit: Any) -> str:
+    """Best-effort label when display_name is empty."""
+    if crit.user_list and crit.user_list.user_list:
+        return f"Remarketing list {crit.user_list.user_list.split('/')[-1]}"
+    if crit.user_interest and crit.user_interest.user_interest_category:
+        return f"User interest {crit.user_interest.user_interest_category.split('/')[-1]}"
+    return ""
+
+
+def fetch_pmax_audience_signals(
+    customer_id: str,
+    platform_campaign_id: str,
+) -> list[dict]:
+    """List audience signals attached to PMax asset groups (no per-signal metrics).
+
+    PMax doesn't expose per-signal performance — this just shows what's
+    attached so the UI can flag PMAX_MISSING_AUDIENCE_SIGNAL.
+    """
+    customer_id = customer_id.replace("-", "")
+    client = _get_client()
+
+    query = f"""
+        SELECT
+            asset_group_signal.audience,
+            asset_group_signal.search_theme.text,
+            asset_group.id,
+            asset_group.name
+        FROM asset_group_signal
+        WHERE campaign.id = {platform_campaign_id}
+    """
+    try:
+        rows = _search_stream(client, customer_id, query)
+    except GoogleAdsException:
+        logger.exception("asset_group_signal failed for PMax %s", platform_campaign_id)
+        return []
+
+    results = []
+    for row in rows:
+        ags = row.asset_group_signal
+        audience_rn = ags.audience
+        search_theme = ags.search_theme.text if ags.search_theme else None
+        if audience_rn:
+            results.append({
+                "asset_group_id": str(row.asset_group.id),
+                "asset_group_name": row.asset_group.name,
+                "signal_type": "AUDIENCE",
+                "value": audience_rn.split("/")[-1] if audience_rn else "",
+            })
+        elif search_theme:
+            results.append({
+                "asset_group_id": str(row.asset_group.id),
+                "asset_group_name": row.asset_group.name,
+                "signal_type": "SEARCH_THEME",
+                "value": search_theme,
+            })
+    return results
+
+
+# ── Placements (PMax / Display / Video) ─────────────────────
+
+
+_PLACEMENT_TYPE_LABEL = {
+    "WEBSITE": "Website",
+    "MOBILE_APPLICATION": "Mobile app",
+    "MOBILE_APP_CATEGORY": "Mobile app category",
+    "YOUTUBE_VIDEO": "YouTube video",
+    "YOUTUBE_CHANNEL": "YouTube channel",
+    "GOOGLE_PRODUCTS": "Google products",
+}
+
+
+def fetch_placement_metrics(
+    customer_id: str,
+    platform_campaign_id: str,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> list[dict]:
+    """Where the ad served — apps, websites, YouTube channels.
+
+    Available for PMax, Display, Video. Search campaigns return [].
+    """
+    customer_id = customer_id.replace("-", "")
+    date_from, date_to = _default_range(date_from, date_to)
+    client = _get_client()
+
+    query = f"""
+        SELECT
+            detail_placement_view.placement,
+            detail_placement_view.placement_type,
+            detail_placement_view.display_name,
+            detail_placement_view.target_url,
+            metrics.cost_micros,
+            metrics.impressions,
+            metrics.clicks,
+            metrics.conversions,
+            metrics.conversions_value
+        FROM detail_placement_view
+        WHERE campaign.id = {platform_campaign_id}
+            AND segments.date BETWEEN '{date_from.isoformat()}' AND '{date_to.isoformat()}'
+    """
+    try:
+        rows = _search_stream(client, customer_id, query)
+    except GoogleAdsException:
+        logger.exception("detail_placement_view failed for %s", platform_campaign_id)
+        return []
+
+    results = []
+    for row in rows:
+        dpv = row.detail_placement_view
+        placement = dpv.placement or ""
+        ptype_raw = _enum_name(dpv.placement_type) if dpv.placement_type else "UNKNOWN"
+        m = _row_to_metrics(row.metrics)
+        results.append({
+            "placement": placement,
+            "display_name": dpv.display_name or placement,
+            "target_url": dpv.target_url or "",
+            "placement_type": _PLACEMENT_TYPE_LABEL.get(ptype_raw, ptype_raw),
+            "placement_type_raw": ptype_raw,
+            **{k: m[k] for k in ("spend", "impressions", "clicks", "conversions", "revenue", "ctr", "cvr", "cpc", "cpa", "roas")},
+        })
+    results.sort(key=lambda r: r["spend"], reverse=True)
+    return results

@@ -323,3 +323,191 @@ def diagnose_time_of_day(rows: list[dict]) -> dict[str, Any]:
         "waste_hours": waste_hours,
         "peak_hours": peak_hours,
     }
+
+
+# ── Audience diagnosis ──────────────────────────────────────
+
+
+# Map Google Ads criterion type → playbook bucket
+_AUDIENCE_BUCKET = {
+    "USER_LIST": "REMARKETING",
+    "USER_INTEREST": "IN_MARKET_OR_AFFINITY",
+    "DETAILED_DEMOGRAPHIC": "DEMOGRAPHIC",
+    "AGE_RANGE": "DEMOGRAPHIC",
+    "GENDER": "DEMOGRAPHIC",
+    "LIFE_EVENT": "LIFE_EVENT",
+    "CUSTOM_AUDIENCE": "CUSTOM",
+    "COMBINED_AUDIENCE": "COMBINED",
+}
+
+
+def _audience_bucket(crit_type: str, name: str) -> str:
+    bucket = _AUDIENCE_BUCKET.get(crit_type, "OTHER")
+    # USER_INTEREST covers both In-market and Affinity — split heuristically by name
+    if bucket == "IN_MARKET_OR_AFFINITY":
+        n = name.lower()
+        if "in-market" in n or "in market" in n:
+            return "IN_MARKET"
+        if "affinity" in n:
+            return "AFFINITY"
+        return "INTEREST"
+    return bucket
+
+
+def diagnose_audiences(rows: list[dict]) -> dict[str, Any]:
+    if not rows:
+        return {"audiences": [], "by_bucket": {}, "winners": [], "weak": [], "break_out": []}
+
+    enriched = []
+    total_spend = sum(r["spend"] for r in rows)
+
+    # Baseline CVR = weighted avg
+    total_clicks = sum(r["clicks"] for r in rows)
+    total_conv = sum(r["conversions"] for r in rows)
+    baseline_cvr = (total_conv / total_clicks * 100) if total_clicks > 0 else 0
+
+    for r in rows:
+        bucket = _audience_bucket(r["criterion_type"], r["audience"])
+        spend = r["spend"]
+        clicks = r["clicks"]
+        conv = r["conversions"]
+        cvr = r.get("cvr") or 0
+        roas = r.get("roas") or 0
+        spend_share = (spend / total_spend) if total_spend > 0 else 0
+
+        flags: list[str] = []
+        # Strong: CVR ≥ 1.5× baseline + ≥1 conv
+        if conv >= 1 and baseline_cvr > 0 and cvr >= baseline_cvr * 1.5:
+            flags.append("STRONG_AUDIENCE")
+        # Weak: ≥30 clicks, CVR ≤ 0.5× baseline (or zero)
+        if clicks >= 30 and (cvr == 0 or (baseline_cvr > 0 and cvr < baseline_cvr * 0.5)):
+            flags.append("WEAK_AUDIENCE")
+        # Break-out candidate: ≥10% spend share + ROAS ≥ 2 → split into own campaign
+        if spend_share >= 0.10 and roas >= 2:
+            flags.append("BREAK_OUT_CANDIDATE")
+        # Remarketing-specific: should be 2–3× baseline per playbook
+        if bucket == "REMARKETING" and clicks >= 20 and cvr < baseline_cvr * 2 and baseline_cvr > 0:
+            flags.append("REMARKETING_UNDERPERFORMING")
+
+        enriched.append({**r, "bucket": bucket, "spend_share": spend_share, "flags": flags})
+
+    def _agg(rows_: list[dict]) -> dict:
+        spend = sum(r["spend"] for r in rows_)
+        clicks = sum(r["clicks"] for r in rows_)
+        conv = sum(r["conversions"] for r in rows_)
+        revenue = sum(r["revenue"] for r in rows_)
+        return {
+            "audience_count": len(rows_),
+            "spend": spend, "clicks": clicks, "conversions": conv,
+            "cvr": (conv / clicks * 100) if clicks > 0 else 0,
+            "roas": (revenue / spend) if spend > 0 else 0,
+        }
+
+    by_bucket: dict[str, dict] = {}
+    for r in enriched:
+        by_bucket.setdefault(r["bucket"], []).append(r)
+    by_bucket_agg = {k: _agg(v) for k, v in by_bucket.items()}
+
+    winners = sorted([r for r in enriched if "STRONG_AUDIENCE" in r["flags"]], key=lambda r: r["roas"], reverse=True)
+    weak = sorted([r for r in enriched if "WEAK_AUDIENCE" in r["flags"]], key=lambda r: r["spend"], reverse=True)
+    break_out = sorted([r for r in enriched if "BREAK_OUT_CANDIDATE" in r["flags"]], key=lambda r: r["roas"], reverse=True)
+
+    return {
+        "audiences": enriched,
+        "by_bucket": by_bucket_agg,
+        "winners": winners[:10],
+        "weak": weak[:10],
+        "break_out": break_out[:10],
+        "baseline_cvr": baseline_cvr,
+    }
+
+
+# ── Placement diagnosis ─────────────────────────────────────
+
+
+# Junk patterns we've seen drain PMax/Display budgets
+_JUNK_NAME_TOKENS = {
+    "kid", "kids", "game", "games", "play", "puzzle", "casino", "slot",
+    "stickman", "merge", "color by number", "wallpaper",
+}
+
+
+def diagnose_placements(rows: list[dict]) -> dict[str, Any]:
+    if not rows:
+        return {
+            "placements": [], "junk": [], "winners": [],
+            "by_type": {}, "youtube_awareness": [],
+        }
+
+    total_spend = sum(r["spend"] for r in rows)
+    enriched = []
+
+    for r in rows:
+        spend = r["spend"]
+        clicks = r["clicks"]
+        conv = r["conversions"]
+        impr = r["impressions"]
+        roas = r.get("roas") or 0
+        cvr = r.get("cvr") or 0
+        ctr = r.get("ctr") or 0
+        spend_share = (spend / total_spend) if total_spend > 0 else 0
+
+        flags: list[str] = []
+        name_lower = (r["display_name"] or r["placement"] or "").lower()
+        is_app = r["placement_type_raw"] == "MOBILE_APPLICATION"
+        is_youtube = r["placement_type_raw"] in ("YOUTUBE_VIDEO", "YOUTUBE_CHANNEL")
+
+        # Junk app: mobile app, ≥1000 impressions, 0 conversions, any spend
+        if is_app and impr >= 1000 and conv == 0 and spend > 0:
+            flags.append("JUNK_APP")
+
+        # Name-based junk (kids/games)
+        if any(t in name_lower for t in _JUNK_NAME_TOKENS):
+            flags.append("JUNK_CONTENT")
+
+        # YouTube awareness pattern: high impressions, very low CVR
+        if is_youtube and impr >= 1000 and cvr < 0.1:
+            flags.append("YT_AWARENESS_ONLY")
+
+        # Winner: ≥1 conv + ROAS ≥ 2
+        if conv >= 1 and roas >= 2:
+            flags.append("WINNER")
+
+        # Wasted spend: ≥1% spend share, ≥30 clicks, 0 conversions
+        if spend_share >= 0.01 and clicks >= 30 and conv == 0:
+            flags.append("EXCLUDE_CANDIDATE")
+
+        enriched.append({**r, "spend_share": spend_share, "flags": flags})
+
+    def _agg(rows_: list[dict]) -> dict:
+        spend = sum(r["spend"] for r in rows_)
+        clicks = sum(r["clicks"] for r in rows_)
+        conv = sum(r["conversions"] for r in rows_)
+        revenue = sum(r["revenue"] for r in rows_)
+        return {
+            "placement_count": len(rows_),
+            "spend": spend, "clicks": clicks, "conversions": conv,
+            "cvr": (conv / clicks * 100) if clicks > 0 else 0,
+            "roas": (revenue / spend) if spend > 0 else 0,
+        }
+
+    by_type: dict[str, list] = {}
+    for r in enriched:
+        by_type.setdefault(r["placement_type"], []).append(r)
+    by_type_agg = {k: _agg(v) for k, v in by_type.items()}
+
+    junk = sorted(
+        [r for r in enriched if "JUNK_APP" in r["flags"] or "JUNK_CONTENT" in r["flags"] or "EXCLUDE_CANDIDATE" in r["flags"]],
+        key=lambda r: r["spend"], reverse=True,
+    )
+    winners = sorted([r for r in enriched if "WINNER" in r["flags"]], key=lambda r: r["roas"], reverse=True)
+    yt_awareness = sorted([r for r in enriched if "YT_AWARENESS_ONLY" in r["flags"]], key=lambda r: r["impressions"], reverse=True)
+
+    return {
+        "placements": enriched[:100],  # cap raw list for payload size
+        "junk": junk[:15],
+        "winners": winners[:15],
+        "youtube_awareness": yt_awareness[:10],
+        "by_type": by_type_agg,
+        "total_placements": len(enriched),
+    }

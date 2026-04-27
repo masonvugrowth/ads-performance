@@ -95,6 +95,38 @@ def _summarize_for_prompt(insights: dict) -> str:
             "peak_hours": top_n(time_of_day.get("peak_hours") or [], 5, ["hour", "spend", "conversions", "roas"]),
         }
 
+    audiences = insights.get("audiences")
+    if audiences:
+        if audiences.get("mode") == "pmax_signals":
+            summary["audiences"] = {
+                "mode": "pmax_signals",
+                "signal_count": audiences.get("signal_count"),
+                "signals": top_n(audiences.get("signals") or [], 10, ["asset_group_name", "signal_type", "value"]),
+            }
+        else:
+            summary["audiences"] = {
+                "mode": "audience_metrics",
+                "baseline_cvr": round(audiences.get("baseline_cvr") or 0, 2),
+                "by_bucket": {k: {kk: round(vv, 2) if isinstance(vv, (int, float)) else vv
+                                  for kk, vv in v.items() if kk in ("audience_count", "spend", "clicks", "conversions", "cvr", "roas")}
+                              for k, v in (audiences.get("by_bucket") or {}).items()},
+                "winners": top_n(audiences.get("winners") or [], 5, ["audience", "bucket", "spend", "conversions", "cvr", "roas"]),
+                "weak": top_n(audiences.get("weak") or [], 5, ["audience", "bucket", "spend", "clicks", "conversions"]),
+                "break_out": top_n(audiences.get("break_out") or [], 5, ["audience", "bucket", "spend_share", "roas"]),
+            }
+
+    placements = insights.get("placements")
+    if placements and placements.get("applicable") is not False:
+        summary["placements"] = {
+            "total": placements.get("total_placements"),
+            "by_type": {k: {kk: round(vv, 2) if isinstance(vv, (int, float)) else vv
+                            for kk, vv in v.items() if kk in ("placement_count", "spend", "clicks", "conversions", "cvr", "roas")}
+                        for k, v in (placements.get("by_type") or {}).items()},
+            "junk": top_n(placements.get("junk") or [], 8, ["display_name", "placement_type", "spend", "clicks", "conversions", "spend_share"]),
+            "winners": top_n(placements.get("winners") or [], 5, ["display_name", "placement_type", "spend", "conversions", "roas"]),
+            "youtube_awareness": top_n(placements.get("youtube_awareness") or [], 5, ["display_name", "impressions", "clicks", "conversions"]),
+        }
+
     return json.dumps(summary, ensure_ascii=False, indent=2, default=str)
 
 
