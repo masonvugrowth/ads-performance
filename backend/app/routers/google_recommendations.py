@@ -15,6 +15,7 @@ from app.models.google_recommendation import GoogleRecommendation
 from app.models.user import User
 from app.services import google_actions
 from app.services.google_recommendations import applier, engine
+from app.services.recommendation_context import build_context_map
 
 router = APIRouter()
 
@@ -28,7 +29,10 @@ def _api_response(data=None, error=None):
     }
 
 
-def _rec_to_dict(r: GoogleRecommendation) -> dict[str, Any]:
+def _rec_to_dict(
+    r: GoogleRecommendation,
+    context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     return {
         "id": r.id,
         "rec_type": r.rec_type,
@@ -58,6 +62,7 @@ def _rec_to_dict(r: GoogleRecommendation) -> dict[str, Any]:
         "dismissed_by": r.dismissed_by,
         "dismiss_reason": r.dismiss_reason,
         "action_log_id": r.action_log_id,
+        "context": context or {},
         "created_at": r.created_at.isoformat() if r.created_at else None,
         "updated_at": r.updated_at.isoformat() if r.updated_at else None,
     }
@@ -111,11 +116,12 @@ def list_recommendations(
         )
         q = q.order_by(severity_order, GoogleRecommendation.created_at.desc())
         rows = q.offset(offset).limit(limit).all()
+        ctx_map = build_context_map(db, rows, include_asset_groups=True)
         return _api_response(data={
             "total": total,
             "limit": limit,
             "offset": offset,
-            "items": [_rec_to_dict(r) for r in rows],
+            "items": [_rec_to_dict(r, ctx_map.get(r.id)) for r in rows],
         })
     except Exception as exc:
         return _api_response(error=str(exc))
@@ -140,7 +146,8 @@ def get_recommendation(
         if scoped_ids is not None and rec.account_id not in scoped_ids:
             raise HTTPException(status_code=403, detail="No access to this branch")
 
-        return _api_response(data=_rec_to_dict(rec))
+        ctx_map = build_context_map(db, [rec], include_asset_groups=True)
+        return _api_response(data=_rec_to_dict(rec, ctx_map.get(rec.id)))
     except HTTPException:
         raise
     except Exception as exc:
@@ -181,7 +188,8 @@ def apply_recommendation(
             applied_by_user_id=current_user.id,
             override_params=body.override_params,
         )
-        return _api_response(data=_rec_to_dict(updated))
+        ctx_map = build_context_map(db, [updated], include_asset_groups=True)
+        return _api_response(data=_rec_to_dict(updated, ctx_map.get(updated.id)))
     except applier.ConfirmationRequired as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except applier.NotAutoApplicable as exc:
@@ -222,7 +230,8 @@ def dismiss_recommendation(
         updated = applier.dismiss_recommendation(
             db, rec_id, reason=body.reason, dismissed_by_user_id=current_user.id,
         )
-        return _api_response(data=_rec_to_dict(updated))
+        ctx_map = build_context_map(db, [updated], include_asset_groups=True)
+        return _api_response(data=_rec_to_dict(updated, ctx_map.get(updated.id)))
     except applier.NotApplicable as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     except HTTPException:
@@ -253,7 +262,8 @@ def regenerate_recommendation(
         refreshed = engine.regenerate_recommendation(db, rec_id)
         if refreshed is None:
             raise HTTPException(status_code=404, detail="Recommendation not found")
-        return _api_response(data=_rec_to_dict(refreshed))
+        ctx_map = build_context_map(db, [refreshed], include_asset_groups=True)
+        return _api_response(data=_rec_to_dict(refreshed, ctx_map.get(refreshed.id)))
     except HTTPException:
         raise
     except Exception as exc:
