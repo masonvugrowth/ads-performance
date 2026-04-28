@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react'
 import { API_BASE } from '@/lib/api'
+import { formatLocalDate } from '@/lib/dates'
 
 type BookingMatch = {
   id: string
@@ -48,11 +49,11 @@ const MATCH_RESULTS = ['Matched', 'Matched (country)', 'Matched (combo)', 'Multi
 
 function getDateRange(preset: string): { from: string; to: string } {
   const today = new Date()
-  const to = today.toISOString().split('T')[0]
+  const to = formatLocalDate(today)
   const daysBack = (d: number) => {
     const dt = new Date(today)
     dt.setDate(dt.getDate() - d)
-    return dt.toISOString().split('T')[0]
+    return formatLocalDate(dt)
   }
   switch (preset) {
     case 'today': return { from: to, to }
@@ -65,21 +66,21 @@ function getDateRange(preset: string): { from: string; to: string } {
     case '30d': return { from: daysBack(29), to }
     case '90d': return { from: daysBack(89), to }
     case 'this_month': {
-      const from = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().split('T')[0]
+      const from = formatLocalDate(new Date(today.getFullYear(), today.getMonth(), 1))
       return { from, to }
     }
     case 'last_month': {
-      const from = new Date(today.getFullYear(), today.getMonth() - 1, 1).toISOString().split('T')[0]
-      const last = new Date(today.getFullYear(), today.getMonth(), 0).toISOString().split('T')[0]
+      const from = formatLocalDate(new Date(today.getFullYear(), today.getMonth() - 1, 1))
+      const last = formatLocalDate(new Date(today.getFullYear(), today.getMonth(), 0))
       return { from, to: last }
     }
     case 'this_year': {
-      const from = new Date(today.getFullYear(), 0, 1).toISOString().split('T')[0]
+      const from = formatLocalDate(new Date(today.getFullYear(), 0, 1))
       return { from, to }
     }
     case 'last_year': {
-      const from = new Date(today.getFullYear() - 1, 0, 1).toISOString().split('T')[0]
-      const last = new Date(today.getFullYear() - 1, 11, 31).toISOString().split('T')[0]
+      const from = formatLocalDate(new Date(today.getFullYear() - 1, 0, 1))
+      const last = formatLocalDate(new Date(today.getFullYear() - 1, 11, 31))
       return { from, to: last }
     }
     default: return { from: daysBack(29), to }

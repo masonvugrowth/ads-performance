@@ -5,6 +5,7 @@ import { useSearchParams } from 'next/navigation'
 import { TrendingUp, TrendingDown, ArrowUp, ArrowDown, ArrowUpDown, ChevronRight, Activity, BarChart3, Sparkles } from 'lucide-react'
 import { apiFetch } from '@/lib/api'
 import { useSortableRows } from '@/lib/useSortableRows'
+import { formatLocalDate } from '@/lib/dates'
 import ActivityLogPanel from './ActivityLogPanel'
 import ManualEntryModal from './ManualEntryModal'
 
@@ -114,11 +115,11 @@ function ChangeTag({ change, inverseColor = false }: { change: number | null; in
 
 function getDateRange(preset: string): { from: string; to: string } {
   const today = new Date()
-  const to = today.toISOString().split('T')[0]
+  const to = formatLocalDate(today)
   const daysBack = (d: number) => {
     const dt = new Date(today)
     dt.setDate(dt.getDate() - d)
-    return dt.toISOString().split('T')[0]
+    return formatLocalDate(dt)
   }
   switch (preset) {
     case 'today': return { from: to, to }
@@ -130,12 +131,12 @@ function getDateRange(preset: string): { from: string; to: string } {
     case '14d': return { from: daysBack(13), to }
     case '30d': return { from: daysBack(29), to }
     case 'this_month': {
-      const from = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().split('T')[0]
+      const from = formatLocalDate(new Date(today.getFullYear(), today.getMonth(), 1))
       return { from, to }
     }
     case 'last_month': {
-      const from = new Date(today.getFullYear(), today.getMonth() - 1, 1).toISOString().split('T')[0]
-      const last = new Date(today.getFullYear(), today.getMonth(), 0).toISOString().split('T')[0]
+      const from = formatLocalDate(new Date(today.getFullYear(), today.getMonth() - 1, 1))
+      const last = formatLocalDate(new Date(today.getFullYear(), today.getMonth(), 0))
       return { from, to: last }
     }
     default: return { from: daysBack(6), to }
