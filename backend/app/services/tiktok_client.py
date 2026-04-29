@@ -194,17 +194,16 @@ def fetch_advertiser_info(advertiser_ids: list[str]) -> list[dict]:
 
 
 def fetch_campaigns(advertiser_id: str) -> list[dict]:
-    """Pull every (non-deleted) campaign for an advertiser."""
+    """Pull every (non-deleted) campaign for an advertiser.
+
+    `fields` parameter is intentionally omitted — TikTok returns all default
+    fields, which avoids 40002 errors when v1.3 field names change. Campaign
+    level has no schedule_start_time / schedule_end_time (those live on
+    adgroups), so start/end dates fall back to None for now.
+    """
     raw = _paginate(
         "/campaign/get/",
-        {
-            "advertiser_id": str(advertiser_id),
-            "fields": [
-                "campaign_id", "campaign_name", "objective_type", "operation_status",
-                "secondary_status", "budget", "budget_mode", "schedule_start_time",
-                "schedule_end_time", "create_time", "modify_time",
-            ],
-        },
+        {"advertiser_id": str(advertiser_id)},
     )
     out = []
     for c in raw:
@@ -220,11 +219,13 @@ def fetch_campaigns(advertiser_id: str) -> list[dict]:
             "platform_campaign_id": str(c.get("campaign_id")),
             "name": c.get("campaign_name") or "",
             "status": _normalise_status(op),
-            "objective": c.get("objective_type"),
+            "objective": c.get("objective_type") or c.get("objective"),
             "daily_budget": daily,
             "lifetime_budget": lifetime,
-            "start_date": _parse_date(c.get("schedule_start_time")),
-            "end_date": _parse_date(c.get("schedule_end_time")),
+            # Campaigns have no schedule fields in TikTok — adgroups carry
+            # those instead. Fall back to create_time so we have *some* anchor.
+            "start_date": _parse_date(c.get("create_time")),
+            "end_date": None,
             "raw_data": c,
         })
     logger.info("Fetched %d TikTok campaigns for advertiser %s", len(out), advertiser_id)
@@ -232,18 +233,13 @@ def fetch_campaigns(advertiser_id: str) -> list[dict]:
 
 
 def fetch_adgroups(advertiser_id: str) -> list[dict]:
-    """Pull every (non-deleted) adgroup. Adgroups map to ad_sets in our schema."""
+    """Pull every (non-deleted) adgroup. Adgroups map to ad_sets in our schema.
+
+    `fields` omitted — see fetch_campaigns docstring.
+    """
     raw = _paginate(
         "/adgroup/get/",
-        {
-            "advertiser_id": str(advertiser_id),
-            "fields": [
-                "adgroup_id", "adgroup_name", "campaign_id", "operation_status",
-                "secondary_status", "optimization_goal", "billing_event",
-                "budget", "budget_mode", "schedule_start_time", "schedule_end_time",
-                "location_ids", "targeting_expansion", "create_time",
-            ],
-        },
+        {"advertiser_id": str(advertiser_id)},
     )
     out = []
     for ag in raw:
@@ -275,17 +271,10 @@ def fetch_adgroups(advertiser_id: str) -> list[dict]:
 
 
 def fetch_ads(advertiser_id: str) -> list[dict]:
+    """`fields` omitted — see fetch_campaigns docstring."""
     raw = _paginate(
         "/ad/get/",
-        {
-            "advertiser_id": str(advertiser_id),
-            "fields": [
-                "ad_id", "ad_name", "adgroup_id", "campaign_id",
-                "operation_status", "secondary_status", "ad_format",
-                "creative_type", "video_id", "image_ids", "landing_page_url",
-                "ad_text", "call_to_action", "create_time", "modify_time",
-            ],
-        },
+        {"advertiser_id": str(advertiser_id)},
     )
     out = []
     for a in raw:
