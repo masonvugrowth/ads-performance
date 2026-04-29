@@ -73,6 +73,122 @@ class TikTokRegisterBody(BaseModel):
     branch: str | None = None  # canonical branch key from BRANCH_ACCOUNT_MAP
 
 
+class TikTokBackfillBody(BaseModel):
+    advertiser_id: str
+    months_back: int = 24
+    date_from: str | None = None  # YYYY-MM-DD — overrides months_back
+    date_to: str | None = None    # YYYY-MM-DD — defaults to today
+
+
+# Track TikTok backfill progress separately from the regular /sync/* state so
+# both can run side-by-side without lock contention.
+_tiktok_backfill_state: dict = {
+    "running": False,
+    "started_at": None,
+    "finished_at": None,
+    "advertiser_id": None,
+    "date_from": None,
+    "date_to": None,
+    "chunks_done": 0,
+    "chunks_total": 0,
+    "metrics_synced": 0,
+    "errors": [],
+    "error": None,
+}
+_tiktok_backfill_lock = threading.Lock()
+
+
+def _run_tiktok_backfill(
+    advertiser_id: str,
+    months_back: int,
+    date_from_iso: str | None,
+    date_to_iso: str | None,
+):
+    """Walk a date range backwards in 30-day chunks for one TikTok advertiser.
+
+    Re-uses sync_tiktok_metrics_window per chunk — entities (campaigns /
+    adgroups / ads) are NOT re-fetched (assumed already in DB from a recent
+    /sync/trigger call).
+    """
+    from datetime import date, timedelta
+    from app.models.account import AdAccount
+    from app.services.tiktok_sync_engine import sync_tiktok_metrics_window
+
+    CHUNK_DAYS = 30
+
+    db = SessionLocal()
+    try:
+        end = date.fromisoformat(date_to_iso) if date_to_iso else date.today()
+        start = (
+            date.fromisoformat(date_from_iso)
+            if date_from_iso
+            else end - timedelta(days=months_back * 30)
+        )
+        total_days = (end - start).days + 1
+        chunks_total = (total_days + CHUNK_DAYS - 1) // CHUNK_DAYS
+
+        with _tiktok_backfill_lock:
+            _tiktok_backfill_state["running"] = True
+            _tiktok_backfill_state["started_at"] = datetime.now(timezone.utc).isoformat()
+            _tiktok_backfill_state["finished_at"] = None
+            _tiktok_backfill_state["advertiser_id"] = advertiser_id
+            _tiktok_backfill_state["date_from"] = start.isoformat()
+            _tiktok_backfill_state["date_to"] = end.isoformat()
+            _tiktok_backfill_state["chunks_done"] = 0
+            _tiktok_backfill_state["chunks_total"] = chunks_total
+            _tiktok_backfill_state["metrics_synced"] = 0
+            _tiktok_backfill_state["errors"] = []
+            _tiktok_backfill_state["error"] = None
+
+        account = (
+            db.query(AdAccount)
+            .filter(AdAccount.platform == "tiktok", AdAccount.account_id == advertiser_id)
+            .first()
+        )
+        if not account:
+            with _tiktok_backfill_lock:
+                _tiktok_backfill_state["error"] = (
+                    f"TikTok advertiser {advertiser_id} not registered — "
+                    f"call /sync/tiktok/register first"
+                )
+            return
+
+        chunk_end = end
+        while chunk_end >= start:
+            chunk_start = max(chunk_end - timedelta(days=CHUNK_DAYS - 1), start)
+            try:
+                res = sync_tiktok_metrics_window(db, account, chunk_start, chunk_end)
+                with _tiktok_backfill_lock:
+                    _tiktok_backfill_state["chunks_done"] += 1
+                    _tiktok_backfill_state["metrics_synced"] += res.get("metrics_synced", 0)
+                    if res.get("errors"):
+                        _tiktok_backfill_state["errors"].extend(
+                            f"[{chunk_start}..{chunk_end}] {e}" for e in res["errors"]
+                        )
+                logger.info(
+                    "[tiktok-backfill] %s [%s..%s] metrics=%d errs=%d",
+                    advertiser_id, chunk_start, chunk_end,
+                    res.get("metrics_synced", 0), len(res.get("errors", [])),
+                )
+            except Exception as e:
+                logger.exception("[tiktok-backfill] chunk failed %s..%s", chunk_start, chunk_end)
+                with _tiktok_backfill_lock:
+                    _tiktok_backfill_state["errors"].append(
+                        f"[{chunk_start}..{chunk_end}] EXCEPTION: {e}"
+                    )
+                    _tiktok_backfill_state["chunks_done"] += 1
+            chunk_end = chunk_start - timedelta(days=1)
+    except Exception as e:
+        logger.exception("[tiktok-backfill] outer failure")
+        with _tiktok_backfill_lock:
+            _tiktok_backfill_state["error"] = str(e)
+    finally:
+        db.close()
+        with _tiktok_backfill_lock:
+            _tiktok_backfill_state["running"] = False
+            _tiktok_backfill_state["finished_at"] = datetime.now(timezone.utc).isoformat()
+
+
 @router.post("/sync/trigger")
 def trigger_sync(background_tasks: BackgroundTasks, platform: str | None = None):
     """Manually trigger a data sync for one or all platforms.
@@ -139,6 +255,42 @@ def tiktok_list_advertisers():
         return _api_response(data=data)
     except Exception as e:
         return _api_response(error=str(e))
+
+
+@router.post("/sync/tiktok/backfill")
+def tiktok_backfill(body: TikTokBackfillBody, background_tasks: BackgroundTasks):
+    """Walk a TikTok advertiser's metrics history in 30-day chunks.
+
+    Default: last 24 months. Pass `date_from` / `date_to` (YYYY-MM-DD) to
+    override. Entities (campaigns/adgroups/ads) are NOT re-synced — call
+    /sync/trigger?platform=tiktok first if you suspect missing entities.
+
+    TikTok's report API typically retains ~13 months of detailed daily data;
+    older requests just return empty rows (counted as 0 synced, no error).
+    Runs async; poll /sync/tiktok/backfill/status.
+    """
+    with _tiktok_backfill_lock:
+        if _tiktok_backfill_state["running"]:
+            return _api_response(
+                error="TikTok backfill already running",
+                data={"started_at": _tiktok_backfill_state["started_at"]},
+            )
+    background_tasks.add_task(
+        _run_tiktok_backfill,
+        body.advertiser_id, body.months_back, body.date_from, body.date_to,
+    )
+    return _api_response(data={
+        "message": "TikTok backfill started in background",
+        "advertiser_id": body.advertiser_id,
+        "months_back": body.months_back,
+        "poll_url": "/api/sync/tiktok/backfill/status",
+    })
+
+
+@router.get("/sync/tiktok/backfill/status")
+def tiktok_backfill_status():
+    with _tiktok_backfill_lock:
+        return _api_response(data=dict(_tiktok_backfill_state))
 
 
 @router.post("/sync/tiktok/register")
