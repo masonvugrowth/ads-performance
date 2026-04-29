@@ -432,7 +432,7 @@ def register_tiktok_advertisers(
         summary["errors"].append(str(e))
         return summary
 
-    info_by_id = {str(row.get("id") or row.get("advertiser_id")): row for row in info_rows}
+    info_by_id = {str(row.get("advertiser_id") or row.get("id")): row for row in info_rows}
 
     for adv_id in advertiser_ids:
         adv_id = str(adv_id)

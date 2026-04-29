@@ -179,7 +179,7 @@ def fetch_advertiser_info(advertiser_ids: list[str]) -> list[dict]:
         {
             "advertiser_ids": [str(x) for x in advertiser_ids],
             "fields": [
-                "id", "name", "currency", "timezone", "status",
+                "advertiser_id", "name", "currency", "timezone", "status",
                 "advertiser_account_type", "company", "country",
             ],
         },
