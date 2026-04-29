@@ -373,21 +373,26 @@ def upsert_monthly_split(
         if created_by:
             split.created_by = created_by
 
-    # Cascade — replace every channel plan for this (branch, month)
+    # Cascade — replace every channel plan for this (branch, month).
+    # Use bulk DELETE (not per-row db.delete) to avoid session-identity-map
+    # races against rows created by the legacy "New Plan" path or earlier
+    # script runs.
     month_date = date(year, month, 1)
-    existing_plans = (
-        db.query(BudgetPlan)
-        .filter(
-            BudgetPlan.branch == branch,
-            BudgetPlan.month == month_date,
-        )
+    existing_plan_ids = [
+        row[0]
+        for row in db.query(BudgetPlan.id)
+        .filter(BudgetPlan.branch == branch, BudgetPlan.month == month_date)
         .all()
-    )
-    for p in existing_plans:
-        # Detach allocations first (FK CASCADE handles this, but be explicit
-        # so SQLite without cascade also works).
-        db.query(BudgetAllocation).filter(BudgetAllocation.plan_id == p.id).delete()
-        db.delete(p)
+    ]
+    if existing_plan_ids:
+        # FK is ON DELETE CASCADE on Postgres, but be explicit so SQLite (and
+        # any case where the FK was added without cascade) still works.
+        db.query(BudgetAllocation).filter(
+            BudgetAllocation.plan_id.in_(existing_plan_ids)
+        ).delete(synchronize_session=False)
+        db.query(BudgetPlan).filter(
+            BudgetPlan.id.in_(existing_plan_ids)
+        ).delete(synchronize_session=False)
     db.flush()
 
     month_label = _MONTH_NAMES[month]
