@@ -43,6 +43,13 @@ _STATUS_MAP = {
 #
 # TikTok exposes pixel + onsite + offline + app totals via `total_*` columns,
 # which is the unified deduped metric set (analogous to Meta's omni_*).
+#
+# IMPORTANT: TikTok rejects total_complete_payment, total_complete_payment_value,
+# total_add_to_cart, and total_initiate_checkout for advertisers without those
+# events tracked at all data_levels. We rely on total_purchase /
+# total_purchase_value as the primary conversion + revenue, which TikTok
+# accepts globally. ATC / checkout funnel stages will be 0 for TikTok rows
+# (frontend tolerates gaps).
 _REPORT_METRICS = [
     # --- spend / reach / engagement ---
     "spend",
@@ -61,13 +68,9 @@ _REPORT_METRICS = [
     "video_views_p100",
     # --- pixel/onsite/app/offline totals (deduped) ---
     "total_search",
-    "total_add_to_cart",
-    "total_initiate_checkout",
     "total_landing_page_view",
     "total_purchase",
     "total_purchase_value",
-    "total_complete_payment",
-    "total_complete_payment_value",
 ]
 
 
@@ -429,14 +432,18 @@ def fetch_campaign_metrics(advertiser_id: str, date_from: date, date_to: date) -
 
 
 def fetch_adgroup_metrics(advertiser_id: str, date_from: date, date_to: date) -> list[dict]:
+    # AUCTION_ADGROUP only accepts adgroup_id + a time dimension. campaign_id
+    # is rejected — we look it up via adset.campaign_id during upsert instead.
     return _fetch_report(
         advertiser_id, "AUCTION_ADGROUP",
-        ["adgroup_id", "campaign_id", "stat_time_day"], date_from, date_to,
+        ["adgroup_id", "stat_time_day"], date_from, date_to,
     )
 
 
 def fetch_ad_metrics(advertiser_id: str, date_from: date, date_to: date) -> list[dict]:
+    # AUCTION_AD only accepts ad_id + a time dimension. parent ids resolved
+    # via DB lookup during upsert.
     return _fetch_report(
         advertiser_id, "AUCTION_AD",
-        ["ad_id", "adgroup_id", "campaign_id", "stat_time_day"], date_from, date_to,
+        ["ad_id", "stat_time_day"], date_from, date_to,
     )

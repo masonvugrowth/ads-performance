@@ -39,9 +39,7 @@ def _run_sync_background(platform: str | None):
 
     db = SessionLocal()
     try:
-        results = sync_all_platforms(db)
-        if platform:
-            results = [r for r in results if r.get("platform") == platform]
+        results = sync_all_platforms(db, platform_filter=platform)
         logger.info("Background sync completed: %d accounts processed", len(results))
         with _sync_lock:
             _sync_state["results"] = {"accounts_processed": len(results), "results": results}

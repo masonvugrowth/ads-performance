@@ -525,12 +525,19 @@ def sync_all_platforms(
     db: Session,
     date_from: date | None = None,
     date_to: date | None = None,
+    platform_filter: str | None = None,
 ) -> list[dict]:
     """Sync all active ad accounts across all platforms.
 
     `date_from` / `date_to` override the per-account default rolling window.
+    `platform_filter` (meta|google|tiktok): when set, only that platform's
+    accounts are synced — useful for ad-hoc TikTok-only refreshes that
+    shouldn't wait on the 30-min Meta loop.
     """
-    accounts = db.query(AdAccount).filter(AdAccount.is_active.is_(True)).all()
+    q = db.query(AdAccount).filter(AdAccount.is_active.is_(True))
+    if platform_filter:
+        q = q.filter(AdAccount.platform == platform_filter)
+    accounts = q.all()
     results = []
 
     for account in accounts:
