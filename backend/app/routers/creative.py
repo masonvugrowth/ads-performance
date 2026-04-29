@@ -669,6 +669,25 @@ def create_combo(
         )
         if not ok:
             return _api_response(error=err)
+
+        # A combo is uniquely identified by (copy_id, material_id). If a row
+        # already exists for that pair, reuse it so the caller can continue
+        # the submit-for-approval flow instead of hitting a unique-constraint
+        # error.
+        existing = (
+            db.query(AdCombo)
+            .filter(AdCombo.copy_id == body.copy_id, AdCombo.material_id == body.material_id)
+            .first()
+        )
+        if existing:
+            return _api_response(data={
+                "id": existing.id,
+                "combo_id": existing.combo_id,
+                "verdict": existing.verdict,
+                "reused": True,
+                "ad_name": existing.ad_name,
+            })
+
         cid = next_combo_id(db)
         combo = AdCombo(
             combo_id=cid, branch_id=body.branch_id,
@@ -682,7 +701,7 @@ def create_combo(
         db.commit()
         db.refresh(combo)
         propagate_derived_verdicts(db)
-        return _api_response(data={"id": combo.id, "combo_id": cid, "verdict": combo.verdict})
+        return _api_response(data={"id": combo.id, "combo_id": cid, "verdict": combo.verdict, "reused": False})
     except Exception as e:
         db.rollback()
         return _api_response(error=str(e))

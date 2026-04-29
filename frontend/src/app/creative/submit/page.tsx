@@ -112,6 +112,14 @@ export default function CreateAndSubmitPage() {
         const data = await res.json()
         if (!data.success) { setError(data.error || 'Failed to create combo'); setSubmitting(false); return }
         comboDataId = data.data.id
+        if (data.data.reused) {
+          const ok = window.confirm(
+            `A combo for this copy + material already exists (${data.data.combo_id}` +
+            `${data.data.ad_name ? ` — "${data.data.ad_name}"` : ''}).\n\n` +
+            `Submit it for approval?`
+          )
+          if (!ok) { setSubmitting(false); return }
+        }
       } else {
         // Create new material + copy + combo
         const res = await fetch(`${API_BASE}/api/combos/quick-create`, {
