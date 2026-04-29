@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from app.models.ad_combo import AdCombo
+from app.models.ad_set import AdSet
 from app.models.approval import ComboApproval
 from app.models.campaign import Campaign
 from app.models.campaign_auto_config import CampaignAutoConfig
@@ -19,8 +20,15 @@ def launch_to_existing_campaign(
     approval_id: str,
     campaign_id: str,
     user_id: str,
+    adset_id: str | None = None,
 ) -> ComboApproval:
-    """Launch an approved combo into an existing campaign via Meta Ads API."""
+    """Launch an approved combo into an existing campaign via Meta Ads API.
+
+    Meta requires an ad set ID (not campaign ID) when creating an ad. If
+    `adset_id` is supplied, it is used after verifying it belongs to the
+    chosen campaign. Otherwise the most recent ACTIVE ad set under the
+    campaign is auto-selected.
+    """
     approval = _validate_launch(db, approval_id, user_id)
     combo = db.query(AdCombo).filter(AdCombo.id == approval.combo_id).first()
     campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
@@ -28,13 +36,13 @@ def launch_to_existing_campaign(
     if not campaign:
         raise ValueError("Campaign not found")
 
+    adset = _resolve_adset(db, campaign, adset_id, combo)
+
     now = datetime.now(timezone.utc)
 
     try:
-        # Call Meta Ads API to create ad
-        # Uses the account associated with the campaign
         account = _get_account_for_campaign(db, campaign)
-        meta_ad_id = _create_meta_ad(account, campaign, combo)
+        meta_ad_id = _create_meta_ad_from_ids(account, adset.platform_adset_id, combo)
 
         approval.launch_campaign_id = campaign_id
         approval.launch_meta_ad_id = meta_ad_id
@@ -195,7 +203,62 @@ def get_available_campaigns(db: Session, account_id: str | None = None) -> list[
     ]
 
 
+def get_available_adsets(db: Session, campaign_id: str) -> list[dict]:
+    """List active ad sets under a campaign for launch selection."""
+    rows = (
+        db.query(AdSet)
+        .filter(AdSet.campaign_id == campaign_id, AdSet.status == "ACTIVE")
+        .order_by(AdSet.name)
+        .all()
+    )
+    return [
+        {
+            "id": a.id,
+            "name": a.name,
+            "platform_adset_id": a.platform_adset_id,
+            "country": a.country,
+            "daily_budget": float(a.daily_budget) if a.daily_budget else None,
+            "status": a.status,
+        }
+        for a in rows
+    ]
+
+
 # ── Private helpers ──────────────────────────────────────────
+
+
+def _resolve_adset(db: Session, campaign: Campaign, adset_id: str | None, combo: AdCombo | None) -> AdSet:
+    """Resolve which ad set to launch into.
+
+    If adset_id is provided, validate it belongs to the campaign. Otherwise,
+    auto-pick an ACTIVE ad set under the campaign — preferring one whose
+    country matches the combo's country if available.
+    """
+    if adset_id:
+        adset = db.query(AdSet).filter(AdSet.id == adset_id).first()
+        if not adset:
+            raise ValueError("Ad set not found")
+        if adset.campaign_id != campaign.id:
+            raise ValueError("Ad set does not belong to the selected campaign")
+        return adset
+
+    candidates = (
+        db.query(AdSet)
+        .filter(AdSet.campaign_id == campaign.id, AdSet.status == "ACTIVE")
+        .order_by(AdSet.created_at.desc())
+        .all()
+    )
+    if not candidates:
+        raise ValueError(
+            "No active ad set under this campaign. Pick an ad set explicitly "
+            "or create a new campaign instead."
+        )
+
+    if combo and combo.country:
+        for a in candidates:
+            if a.country and a.country.upper() == combo.country.upper():
+                return a
+    return candidates[0]
 
 
 def _validate_launch(db: Session, approval_id: str, user_id: str) -> ComboApproval:
@@ -279,24 +342,6 @@ def _create_meta_adset(account, campaign_id: str, combo, config, country: str) -
         "targeting": {"geo_locations": {"countries": [country.upper()]}},
     }
     result = fb_account.create_ad_set(params=params)
-    return result["id"]
-
-
-def _create_meta_ad(account, campaign, combo) -> str:
-    """Create an ad on Meta Ads API for existing campaign. Returns platform ad ID."""
-    from facebook_business.adobjects.adaccount import AdAccount as FBAdAccount
-    from facebook_business.api import FacebookAdsApi
-
-    FacebookAdsApi.init(access_token=account.access_token_enc)
-    fb_account = FBAdAccount(f"act_{account.account_id}")
-
-    params = {
-        "name": combo.ad_name or combo.combo_id,
-        "adset_id": campaign.platform_campaign_id,  # Caller should pass adset
-        "creative": {"creative_id": combo.material_id},
-        "status": "PAUSED",
-    }
-    result = fb_account.create_ad(params=params)
     return result["id"]
 
 

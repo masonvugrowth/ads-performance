@@ -13,12 +13,24 @@ interface Campaign {
   status: string
 }
 
+interface AdSetOption {
+  id: string
+  name: string
+  platform_adset_id: string
+  country: string | null
+  daily_budget: number | null
+  status: string
+}
+
 export default function LaunchPage() {
   const { id } = useParams()
   const router = useRouter()
   const [mode, setMode] = useState<'existing' | 'new'>('existing')
   const [campaigns, setCampaigns] = useState<Campaign[]>([])
   const [selectedCampaign, setSelectedCampaign] = useState('')
+  const [adsets, setAdsets] = useState<AdSetOption[]>([])
+  const [selectedAdset, setSelectedAdset] = useState('')
+  const [adsetsLoading, setAdsetsLoading] = useState(false)
   const [country, setCountry] = useState('')
   const [ta, setTa] = useState('')
   const [language, setLanguage] = useState('')
@@ -33,6 +45,17 @@ export default function LaunchPage() {
       .catch(() => {})
   }, [])
 
+  useEffect(() => {
+    setSelectedAdset('')
+    if (!selectedCampaign) { setAdsets([]); return }
+    setAdsetsLoading(true)
+    fetch(`${API_BASE}/api/launch/adsets?campaign_id=${selectedCampaign}`, { credentials: 'include' })
+      .then(r => r.json())
+      .then(data => { if (data.success) setAdsets(data.data.items || []) })
+      .catch(() => {})
+      .finally(() => setAdsetsLoading(false))
+  }, [selectedCampaign])
+
   const handleLaunch = async () => {
     setLaunching(true)
     setError('')
@@ -40,7 +63,7 @@ export default function LaunchPage() {
     try {
       const endpoint = mode === 'existing' ? '/api/launch/existing' : '/api/launch/new-campaign'
       const body = mode === 'existing'
-        ? { approval_id: id, campaign_id: selectedCampaign }
+        ? { approval_id: id, campaign_id: selectedCampaign, adset_id: selectedAdset || null }
         : { approval_id: id, country, ta, language }
 
       const res = await fetch(`${API_BASE}${endpoint}`, {
@@ -113,18 +136,51 @@ export default function LaunchPage() {
 
       <div className="bg-white rounded-xl border border-gray-200 p-6">
         {mode === 'existing' ? (
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">Select Campaign</label>
-            <select
-              value={selectedCampaign}
-              onChange={e => setSelectedCampaign(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
-            >
-              <option value="">Choose a campaign...</option>
-              {campaigns.map(c => (
-                <option key={c.id} value={c.id}>{c.name}</option>
-              ))}
-            </select>
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Select Campaign</label>
+              <select
+                value={selectedCampaign}
+                onChange={e => setSelectedCampaign(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
+              >
+                <option value="">Choose a campaign...</option>
+                {campaigns.map(c => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </select>
+            </div>
+
+            {selectedCampaign && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Select Ad Set
+                  <span className="text-xs font-normal text-gray-400 ml-2">
+                    Meta requires the ad to live under an ad set
+                  </span>
+                </label>
+                {adsetsLoading ? (
+                  <p className="text-xs text-gray-400">Loading ad sets...</p>
+                ) : adsets.length === 0 ? (
+                  <p className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                    No active ad set under this campaign. Pick another campaign or use &quot;Auto-Create New Campaign&quot;.
+                  </p>
+                ) : (
+                  <select
+                    value={selectedAdset}
+                    onChange={e => setSelectedAdset(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
+                  >
+                    <option value="">Auto-pick (most recent active)</option>
+                    {adsets.map(a => (
+                      <option key={a.id} value={a.id}>
+                        {a.name}{a.country ? ` — ${a.country}` : ''}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
+            )}
           </div>
         ) : (
           <div className="space-y-4">
@@ -168,7 +224,11 @@ export default function LaunchPage() {
 
         <button
           onClick={handleLaunch}
-          disabled={launching || (mode === 'existing' && !selectedCampaign) || (mode === 'new' && (!country || !ta || !language))}
+          disabled={
+            launching
+            || (mode === 'existing' && (!selectedCampaign || adsets.length === 0))
+            || (mode === 'new' && (!country || !ta || !language))
+          }
           className="mt-6 w-full bg-blue-600 text-white px-4 py-2.5 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
         >
           {launching ? 'Launching...' : 'Confirm Launch'}

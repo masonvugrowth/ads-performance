@@ -11,9 +11,12 @@ from app.database import get_db
 from app.main import app
 from app.models.account import AdAccount
 from app.models.ad_combo import AdCombo
+from app.models.ad_set import AdSet
+from app.models.approval import ComboApproval
 from app.models.base import Base
 from app.models.campaign import Campaign
 from app.models.user import User
+from app.models.user_permission import UserPermission
 from app.services.auth_service import create_access_token, hash_password
 
 # ── Test database setup ──────────────────────────────────────
@@ -58,13 +61,18 @@ def _create_user(roles, email=None):
         roles=roles,
     )
     db.add(user)
+    db.flush()
+    if "admin" not in (roles or []):
+        db.add(UserPermission(
+            user_id=user.id, branch="Saigon", section="meta_ads", level="edit",
+        ))
     db.commit()
     db.refresh(user)
     db.close()
     return user
 
 
-def _create_combo_and_account():
+def _create_combo_and_account(with_adset: bool = True):
     db = TestSession()
     account = AdAccount(
         id=str(uuid.uuid4()),
@@ -88,6 +96,19 @@ def _create_combo_and_account():
     )
     db.add(campaign)
     db.flush()
+
+    if with_adset:
+        adset = AdSet(
+            id=str(uuid.uuid4()),
+            campaign_id=campaign.id,
+            account_id=account.id,
+            platform="meta",
+            platform_adset_id="adset_456",
+            name="Test AdSet",
+            status="ACTIVE",
+        )
+        db.add(adset)
+        db.flush()
 
     combo = AdCombo(
         id=str(uuid.uuid4()),
@@ -140,7 +161,7 @@ def test_list_launch_campaigns():
     assert len(data["data"]["items"]) >= 1
 
 
-@patch("app.services.launch_service._create_meta_ad")
+@patch("app.services.launch_service._create_meta_ad_from_ids")
 def test_launch_to_existing_campaign(mock_create_ad):
     mock_create_ad.return_value = "ad_999"
 
@@ -158,6 +179,102 @@ def test_launch_to_existing_campaign(mock_create_ad):
     assert data["success"] is True
     assert data["data"]["launch_status"] == "LAUNCHED"
     assert data["data"]["launch_meta_ad_id"] == "ad_999"
+
+    # Regression: must call Meta with adset platform ID, never campaign ID.
+    args, _kwargs = mock_create_ad.call_args
+    _account, adset_platform_id, _combo = args
+    assert adset_platform_id == "adset_456"
+    assert adset_platform_id != campaign.platform_campaign_id
+
+
+@patch("app.services.launch_service._create_meta_ad_from_ids")
+def test_launch_with_explicit_adset(mock_create_ad):
+    mock_create_ad.return_value = "ad_explicit"
+
+    creator = _create_user(["creator"])
+    reviewer = _create_user(["reviewer"])
+    combo, campaign, account = _create_combo_and_account(with_adset=True)
+
+    db = TestSession()
+    other = AdSet(
+        id=str(uuid.uuid4()),
+        campaign_id=campaign.id,
+        account_id=account.id,
+        platform="meta",
+        platform_adset_id="adset_other",
+        name="Other AdSet",
+        status="ACTIVE",
+    )
+    db.add(other)
+    db.commit()
+    other_id = other.id
+    db.close()
+
+    approval_id = _submit_and_approve(creator, reviewer, combo)
+
+    resp = client.post(
+        "/api/launch/existing",
+        json={"approval_id": approval_id, "campaign_id": campaign.id, "adset_id": other_id},
+        headers=_auth_headers(creator),
+    )
+    assert resp.json()["success"] is True
+    args, _kwargs = mock_create_ad.call_args
+    assert args[1] == "adset_other"
+
+
+def test_launch_fails_when_no_adset_under_campaign():
+    creator = _create_user(["creator"])
+    reviewer = _create_user(["reviewer"])
+    combo, campaign, _ = _create_combo_and_account(with_adset=False)
+    approval_id = _submit_and_approve(creator, reviewer, combo)
+
+    resp = client.post(
+        "/api/launch/existing",
+        json={"approval_id": approval_id, "campaign_id": campaign.id},
+        headers=_auth_headers(creator),
+    )
+    data = resp.json()
+    assert data["success"] is False
+    assert "ad set" in data["error"].lower() or "adset" in data["error"].lower()
+
+
+@patch("app.services.launch_service._create_meta_ad_from_ids")
+def test_launch_marks_failed_on_meta_api_error(mock_create_ad):
+    mock_create_ad.side_effect = RuntimeError("Meta API rate limited")
+
+    creator = _create_user(["creator"])
+    reviewer = _create_user(["reviewer"])
+    combo, campaign, _ = _create_combo_and_account()
+    approval_id = _submit_and_approve(creator, reviewer, combo)
+
+    resp = client.post(
+        "/api/launch/existing",
+        json={"approval_id": approval_id, "campaign_id": campaign.id},
+        headers=_auth_headers(creator),
+    )
+    data = resp.json()
+    assert data["success"] is False
+    assert "rate limited" in data["error"].lower()
+
+    db = TestSession()
+    approval = db.query(ComboApproval).filter(ComboApproval.id == approval_id).first()
+    assert approval.launch_status == "LAUNCH_FAILED"
+    assert "rate limited" in (approval.launch_error or "").lower()
+    db.close()
+
+
+def test_list_adsets_under_campaign():
+    creator = _create_user(["creator"])
+    _, campaign, _ = _create_combo_and_account()
+
+    resp = client.get(
+        f"/api/launch/adsets?campaign_id={campaign.id}",
+        headers=_auth_headers(creator),
+    )
+    data = resp.json()
+    assert data["success"] is True
+    assert len(data["data"]["items"]) == 1
+    assert data["data"]["items"][0]["platform_adset_id"] == "adset_456"
 
 
 def test_non_creator_cannot_launch():

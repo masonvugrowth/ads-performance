@@ -14,6 +14,7 @@ from app.models.ad_combo import AdCombo
 from app.models.base import Base
 from app.models.notification import Notification
 from app.models.user import User
+from app.models.user_permission import UserPermission
 from app.services.auth_service import create_access_token, hash_password
 
 # ── Test database setup ──────────────────────────────────────
@@ -58,6 +59,11 @@ def _create_user(roles, email=None):
         roles=roles,
     )
     db.add(user)
+    db.flush()
+    if "admin" not in (roles or []):
+        db.add(UserPermission(
+            user_id=user.id, branch="Saigon", section="meta_ads", level="edit",
+        ))
     db.commit()
     db.refresh(user)
     db.close()

@@ -10,6 +10,7 @@ from app.models.approval import ComboApproval
 from app.models.user import User
 from app.services.launch_service import (
     get_auto_config,
+    get_available_adsets,
     get_available_campaigns,
     launch_to_existing_campaign,
     launch_with_new_campaign,
@@ -33,6 +34,7 @@ def _api_response(data=None, error=None):
 class LaunchExistingRequest(BaseModel):
     approval_id: str
     campaign_id: str
+    adset_id: str | None = None
 
 
 class LaunchNewCampaignRequest(BaseModel):
@@ -60,6 +62,21 @@ def list_launch_campaigns(
         return _api_response(error=str(e))
 
 
+@router.get("/launch/adsets")
+def list_launch_adsets(
+    campaign_id: str = Query(...),
+    current_user: User = Depends(require_role(["creator", "admin"])),
+    _section: User = Depends(require_section("meta_ads")),
+    db: Session = Depends(get_db),
+):
+    """List active ad sets under a campaign for launch selection."""
+    try:
+        adsets = get_available_adsets(db, campaign_id)
+        return _api_response(data={"items": adsets})
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
 @router.post("/launch/existing")
 def launch_existing(
     body: LaunchExistingRequest,
@@ -74,6 +91,7 @@ def launch_existing(
             approval_id=body.approval_id,
             campaign_id=body.campaign_id,
             user_id=current_user.id,
+            adset_id=body.adset_id,
         )
         return _api_response(data={
             "approval_id": approval.id,
