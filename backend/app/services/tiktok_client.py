@@ -41,15 +41,14 @@ _STATUS_MAP = {
 # Metrics requested at every report level. Mirrored across campaign / adgroup /
 # ad data_levels so the upsert path treats every row the same.
 #
-# TikTok exposes pixel + onsite + offline + app totals via `total_*` columns,
-# which is the unified deduped metric set (analogous to Meta's omni_*).
-#
-# IMPORTANT: TikTok rejects total_complete_payment, total_complete_payment_value,
-# total_add_to_cart, and total_initiate_checkout for advertisers without those
-# events tracked at all data_levels. We rely on total_purchase /
-# total_purchase_value as the primary conversion + revenue, which TikTok
-# accepts globally. ATC / checkout funnel stages will be 0 for TikTok rows
-# (frontend tolerates gaps).
+# TikTok's metric naming is per-advertiser-pixel-config dependent — names that
+# work for one account 40002 on another. Probed against Saigon advertiser:
+#   total_add_to_cart           → 40002 (use total_app_event_add_to_cart)
+#   total_initiate_checkout     → 40002 (use onsite_initiate_checkout_count)
+#   total_complete_payment      → 40002 (use complete_payment, no prefix)
+# total_purchase / total_purchase_value remain the cross-channel deduped
+# revenue + count (analogous to Meta's omni_purchase). complete_payment is
+# kept as a backup because some advertisers track payment but not purchase.
 _REPORT_METRICS = [
     # --- spend / reach / engagement ---
     "spend",
@@ -66,11 +65,15 @@ _REPORT_METRICS = [
     "video_views_p50",
     "video_views_p75",
     "video_views_p100",
-    # --- pixel/onsite/app/offline totals (deduped) ---
+    # --- pixel/onsite/app/offline events (deduped or onsite-only) ---
     "total_search",
     "total_landing_page_view",
+    "total_view_content",
+    "total_app_event_add_to_cart",   # in-app ATC (web ATC isn't surfaced for this advertiser)
+    "onsite_initiate_checkout_count",  # web checkout flow start
     "total_purchase",
     "total_purchase_value",
+    "complete_payment",                # platform-direct payments (backup conversion)
 ]
 
 
@@ -330,12 +333,13 @@ def _normalise_report_row(metrics: dict, dimensions: dict) -> dict:
 
     # Conversions / revenue — prefer the deduped totals; fall back to
     # complete_payment when total_purchase is zero (some advertisers track
-    # only the payment event).
+    # only the payment event). Note: complete_payment is count-only on this
+    # advertiser — TikTok doesn't expose complete_payment_value here, so
+    # revenue stays at total_purchase_value when falling back.
     purchases = _to_int(metrics.get("total_purchase"))
     purchase_value = _to_float(metrics.get("total_purchase_value"))
-    if purchases == 0 and purchase_value == 0:
-        purchases = _to_int(metrics.get("total_complete_payment"))
-        purchase_value = _to_float(metrics.get("total_complete_payment_value"))
+    if purchases == 0:
+        purchases = _to_int(metrics.get("complete_payment"))
 
     cpc = spend / clicks if clicks else 0.0
     cpa = spend / purchases if purchases else 0.0
@@ -365,10 +369,13 @@ def _normalise_report_row(metrics: dict, dimensions: dict) -> dict:
         "revenue_offline": 0.0,
         "roas": roas,
         "cpa": cpa,
-        # Funnel events (pixel + onsite + app + offline totals)
+        # Funnel events. TikTok metric naming for THIS advertiser:
+        #   add_to_cart  ← total_app_event_add_to_cart (web ATC unavailable)
+        #   checkouts    ← onsite_initiate_checkout_count (web booking flow start)
+        # Other advertisers may need different mappings — see _REPORT_METRICS.
         "searches": _to_int(metrics.get("total_search")),
-        "add_to_cart": _to_int(metrics.get("total_add_to_cart")),
-        "checkouts": _to_int(metrics.get("total_initiate_checkout")),
+        "add_to_cart": _to_int(metrics.get("total_app_event_add_to_cart")),
+        "checkouts": _to_int(metrics.get("onsite_initiate_checkout_count")),
         "landing_page_views": _to_int(metrics.get("total_landing_page_view")),
         "leads": 0,
         # Video engagement
