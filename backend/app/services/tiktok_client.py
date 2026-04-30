@@ -65,15 +65,26 @@ _REPORT_METRICS = [
     "video_views_p50",
     "video_views_p75",
     "video_views_p100",
-    # --- pixel/onsite/app/offline events (deduped or onsite-only) ---
+    # --- "all-channels" event totals (verified to match TikTok Ads Manager UI). ---
+    # TikTok metric naming is wildly inconsistent per advertiser pixel config —
+    # the UI's "Total <event> (all-channels)" column maps to different API
+    # field names per event. Mapping below probed against Saigon advertiser:
+    #   ATC      → web_event_add_to_cart          (matches UI total exactly)
+    #   Checkout → initiate_checkout              (no prefix — UI all-channels)
+    #   Search   → total_search                   (cross-channel total)
+    #   LPV      → total_landing_page_view        (cross-channel total)
+    #   View     → total_view_content             (cross-channel total)
+    #   Purchase → total_purchase / _value        (cross-channel total)
+    # The non-"total_" prefixed names (web_event_*, initiate_checkout) are
+    # NOT in TikTok's public docs but are what the API actually accepts here.
     "total_search",
     "total_landing_page_view",
     "total_view_content",
-    "total_app_event_add_to_cart",   # in-app ATC (web ATC isn't surfaced for this advertiser)
-    "onsite_initiate_checkout_count",  # web checkout flow start
+    "web_event_add_to_cart",
+    "initiate_checkout",
     "total_purchase",
     "total_purchase_value",
-    "complete_payment",                # platform-direct payments (backup conversion)
+    "complete_payment",
 ]
 
 
@@ -369,13 +380,15 @@ def _normalise_report_row(metrics: dict, dimensions: dict) -> dict:
         "revenue_offline": 0.0,
         "roas": roas,
         "cpa": cpa,
-        # Funnel events. TikTok metric naming for THIS advertiser:
-        #   add_to_cart  ← total_app_event_add_to_cart (web ATC unavailable)
-        #   checkouts    ← onsite_initiate_checkout_count (web booking flow start)
-        # Other advertisers may need different mappings — see _REPORT_METRICS.
+        # Funnel events — these mappings match TikTok Ads Manager UI's
+        # "Total <event> (all-channels)" columns for the Saigon advertiser:
+        #   add_to_cart  ← web_event_add_to_cart   (verified == UI total)
+        #   checkouts    ← initiate_checkout       (verified == UI total)
+        # Other advertisers with different pixel configs may need different
+        # mappings — see _REPORT_METRICS docstring.
         "searches": _to_int(metrics.get("total_search")),
-        "add_to_cart": _to_int(metrics.get("total_app_event_add_to_cart")),
-        "checkouts": _to_int(metrics.get("onsite_initiate_checkout_count")),
+        "add_to_cart": _to_int(metrics.get("web_event_add_to_cart")),
+        "checkouts": _to_int(metrics.get("initiate_checkout")),
         "landing_page_views": _to_int(metrics.get("total_landing_page_view")),
         "leads": 0,
         # Video engagement
