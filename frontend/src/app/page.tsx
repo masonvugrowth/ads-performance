@@ -7,6 +7,7 @@ import {
   Tooltip, ResponsiveContainer, Legend,
 } from 'recharts'
 import { ChevronRight } from 'lucide-react'
+import { apiFetch } from '@/lib/api'
 import FunnelRecommendations from '@/components/FunnelRecommendations'
 import {
   fmtMoney, fmtNum, ChangeTag, getDateRange, DATE_PRESETS,
@@ -18,6 +19,8 @@ import BranchPie, { BranchBreakdownRow } from '@/components/dashboard/BranchPie'
 import CountryComparisonTable, { CountryKpi } from '@/components/dashboard/CountryComparisonTable'
 import TaBreakdownTable, { TaRow } from '@/components/dashboard/TaBreakdownTable'
 import CampaignBreakdownTable, { CampaignRow } from '@/components/dashboard/CampaignBreakdownTable'
+import ActivityLogPanel from '@/components/dashboard/activity/ActivityLogPanel'
+import ManualEntryModal from '@/components/dashboard/activity/ManualEntryModal'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
@@ -59,6 +62,7 @@ function DashboardInner() {
   const [branches, setBranches] = useState<Branch[]>([])
   const [countries, setCountries] = useState<CountryOption[]>([])
   const [kpiItems, setKpiItems] = useState<CountryKpi[]>([])
+  const [aggregateKpi, setAggregateKpi] = useState<CountryKpi | null>(null)
   const [responseCurrency, setResponseCurrency] = useState('VND')
   const [periodInfo, setPeriodInfo] = useState<{ from: string; to: string; prev_from: string; prev_to: string } | null>(null)
   const [daily, setDaily] = useState<DailyRow[]>([])
@@ -70,6 +74,9 @@ function DashboardInner() {
   const [taData, setTaData] = useState<TaRow[]>([])
   const [campaignRows, setCampaignRows] = useState<CampaignRow[]>([])
   const [loading, setLoading] = useState(true)
+  const [canEditAnalytics, setCanEditAnalytics] = useState(false)
+  const [manualModalOpen, setManualModalOpen] = useState(false)
+  const [activityRefreshKey, setActivityRefreshKey] = useState(0)
 
   // -------------------- derived --------------------
   const activeCurrency = useMemo(() => {
@@ -108,6 +115,18 @@ function DashboardInner() {
     fetch(`${API_BASE}/api/branches`, { credentials: 'include' })
       .then(r => r.json())
       .then(d => { if (d.success) setBranches(d.data) })
+      .catch(() => {})
+  }, [])
+
+  // Check whether the current user can add manual activity-log entries.
+  useEffect(() => {
+    apiFetch<{ is_admin: boolean; permissions?: Array<{ section: string; level: string }> }>('/api/auth/me')
+      .then((res) => {
+        if (!res.success || !res.data) return
+        if (res.data.is_admin) { setCanEditAnalytics(true); return }
+        const hasEdit = (res.data.permissions || []).some(p => p.section === 'analytics' && p.level === 'edit')
+        setCanEditAnalytics(hasEdit)
+      })
       .catch(() => {})
   }, [])
 
@@ -150,6 +169,7 @@ function DashboardInner() {
     ]).then(([kpi, daily, funnel, brBranch, brPlat, brFun, comp, ta, camp]) => {
       if (kpi.success && kpi.data) {
         setKpiItems(kpi.data.items || [])
+        setAggregateKpi(kpi.data.aggregate || null)
         setResponseCurrency(kpi.data.currency || 'VND')
         if (kpi.data.period && kpi.data.prev_period) {
           setPeriodInfo({
@@ -221,22 +241,16 @@ function DashboardInner() {
   }
 
   // -------------------- aggregated KPIs --------------------
-  // /dashboard/country returns one row per country. Sum to get the dashboard
-  // headline numbers; when ?country is set the array has one item already.
+  // When ?country is set, we look at that single country's row (which already
+  // carries period-over-period change). Otherwise we use `aggregate` from the
+  // backend, which sums across all countries in the response and computes
+  // change against the previous period — same shape as a single-country row.
   const selectedKpi = useMemo(() => {
-    if (kpiItems.length === 0) return null
     if (country) return kpiItems.find(k => k.country_code === country) || null
-    return kpiItems.reduce((acc, k) => ({
-      total_spend: acc.total_spend + k.total_spend,
-      total_revenue: acc.total_revenue + k.total_revenue,
-      impressions: acc.impressions + k.impressions,
-      clicks: acc.clicks + k.clicks,
-      conversions: acc.conversions + k.conversions,
-      campaign_count: acc.campaign_count + k.campaign_count,
-    }), { total_spend: 0, total_revenue: 0, impressions: 0, clicks: 0, conversions: 0, campaign_count: 0 })
-  }, [kpiItems, country])
+    return aggregateKpi
+  }, [kpiItems, country, aggregateKpi])
 
-  const countryKpiForChange = country ? kpiItems.find(k => k.country_code === country) : null
+  const kpiForChange = selectedKpi
 
   // -------------------- chips --------------------
   const chips = useMemo(() => {
@@ -380,18 +394,21 @@ function DashboardInner() {
         const ctr = selectedKpi.impressions ? (selectedKpi.clicks / selectedKpi.impressions) * 100 : 0
         const cpa = selectedKpi.conversions ? selectedKpi.total_spend / selectedKpi.conversions : 0
         const headline = [
-          { label: `Spend (${responseCurrency})`, value: fmtMoney(selectedKpi.total_spend, responseCurrency), change: countryKpiForChange?.spend_change ?? null, inverse: true },
-          { label: `Revenue (${responseCurrency})`, value: fmtMoney(selectedKpi.total_revenue, responseCurrency), change: countryKpiForChange?.revenue_change ?? null, inverse: false },
-          { label: 'ROAS', value: roas ? roas.toFixed(2) + 'x' : '0', change: countryKpiForChange?.roas_change ?? null, inverse: false },
-          { label: 'CTR', value: ctr ? ctr.toFixed(1) + '%' : '0%', change: countryKpiForChange?.ctr_change ?? null, inverse: false },
-          { label: `CPA (${responseCurrency})`, value: cpa ? fmtMoney(Math.round(cpa), responseCurrency) : '--', change: countryKpiForChange?.cpa_change ?? null, inverse: true },
-          { label: 'Conversions', value: fmtNum(selectedKpi.conversions), change: countryKpiForChange?.conversions_change ?? null, inverse: false },
+          { label: `Spend (${responseCurrency})`, value: fmtMoney(selectedKpi.total_spend, responseCurrency), change: kpiForChange?.spend_change ?? null, inverse: true },
+          { label: `Revenue (${responseCurrency})`, value: fmtMoney(selectedKpi.total_revenue, responseCurrency), change: kpiForChange?.revenue_change ?? null, inverse: false },
+          { label: 'ROAS', value: roas ? roas.toFixed(2) + 'x' : '0', change: kpiForChange?.roas_change ?? null, inverse: false },
+          { label: 'CTR', value: ctr ? ctr.toFixed(1) + '%' : '0%', change: kpiForChange?.ctr_change ?? null, inverse: false },
+          { label: `CPA (${responseCurrency})`, value: cpa ? fmtMoney(Math.round(cpa), responseCurrency) : '--', change: kpiForChange?.cpa_change ?? null, inverse: true },
+          { label: 'Conversions', value: fmtNum(selectedKpi.conversions), change: kpiForChange?.conversions_change ?? null, inverse: false },
         ]
-        const decomp = country ? [
-          { label: 'CR (Conversion Rate)', value: cr ? cr.toFixed(2) + '%' : '--', change: countryKpiForChange?.cr_change ?? null, inverse: false },
-          { label: `AOV (${responseCurrency})`, value: aov ? fmtMoney(Math.round(aov), responseCurrency) : '--', change: countryKpiForChange?.aov_change ?? null, inverse: false },
-          { label: `CPC (${responseCurrency})`, value: cpc ? fmtMoney(Math.round(cpc), responseCurrency) : '--', change: countryKpiForChange?.cpc_change ?? null, inverse: true },
-        ] : null
+        // ROAS decomposition (CR × AOV / CPC). Always shown — when no country
+        // is selected we use the cross-country aggregate (totals re-derive
+        // ratios cleanly since they're computed from summed counters).
+        const decomp = [
+          { label: 'CR (Conversion Rate)', value: cr ? cr.toFixed(2) + '%' : '--', change: kpiForChange?.cr_change ?? null, inverse: false },
+          { label: `AOV (${responseCurrency})`, value: aov ? fmtMoney(Math.round(aov), responseCurrency) : '--', change: kpiForChange?.aov_change ?? null, inverse: false },
+          { label: `CPC (${responseCurrency})`, value: cpc ? fmtMoney(Math.round(cpc), responseCurrency) : '--', change: kpiForChange?.cpc_change ?? null, inverse: true },
+        ]
 
         const Card = ({ k }: { k: typeof headline[number] }) => (
           <div className="bg-white rounded-xl border border-gray-200 p-5">
@@ -406,23 +423,22 @@ function DashboardInner() {
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
               {headline.map(k => <Card key={k.label} k={k} />)}
             </div>
-            {decomp && (
-              <div>
-                <div className="flex items-center gap-2 mb-2 text-[11px] uppercase tracking-wider text-gray-400 font-semibold">
-                  ROAS decomposition
-                  <span className="text-gray-300 normal-case font-normal tracking-normal">ROAS = CR × AOV / CPC</span>
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  {decomp.map(k => <Card key={k.label} k={k} />)}
-                </div>
+            <div>
+              <div className="flex items-center gap-2 mb-2 text-[11px] uppercase tracking-wider text-gray-400 font-semibold">
+                ROAS decomposition
+                <span className="text-gray-300 normal-case font-normal tracking-normal">ROAS = CR × AOV / CPC</span>
               </div>
-            )}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                {decomp.map(k => <Card key={k.label} k={k} />)}
+              </div>
+            </div>
           </div>
         )
       })()}
 
-      {/* Cross-filter breakdown row */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+      {/* Cross-filter breakdowns — pies on one row, bars on the next so each
+          pair sits side-by-side at the same width. */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
         <BranchPie
           title="By Branch (Cost)"
           rows={byBranch as BranchBreakdownRow[]}
@@ -431,6 +447,16 @@ function DashboardInner() {
           onToggle={toggleBranch}
           valueFormatter={(v) => fmtMoney(v, 'VND')}
         />
+        <BranchPie
+          title="By Branch (Conversions)"
+          rows={byBranch as BranchBreakdownRow[]}
+          valueKey="conversions"
+          selectedBranches={selectedBranches}
+          onToggle={toggleBranch}
+          valueFormatter={(v) => fmtNum(v)}
+        />
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
         <HorizontalBarBreakdown
           title="By Platform"
           items={byPlatform}
@@ -447,14 +473,6 @@ function DashboardInner() {
           selectedKey={funnelStage}
           onSelect={(k) => setFunnelStage(prev => prev === k ? '' : k)}
           metric={breakdownMetric}
-        />
-        <BranchPie
-          title="By Branch (Conversions)"
-          rows={byBranch as BranchBreakdownRow[]}
-          valueKey="conversions"
-          selectedBranches={selectedBranches}
-          onToggle={toggleBranch}
-          valueFormatter={(v) => fmtNum(v)}
         />
       </div>
 
@@ -577,10 +595,40 @@ function DashboardInner() {
         dateTo={resolvedRange.to}
       />
 
+      {/* Activity log — what changed during this period (manual + automated)
+          so the user can correlate spend/ROAS swings to specific actions. */}
+      <div className="mt-6">
+        <ActivityLogPanel
+          country={country}
+          branches={branchParam}
+          platform={platform}
+          dateFrom={resolvedRange.from}
+          dateTo={resolvedRange.to}
+          canEdit={canEditAnalytics}
+          onAddManual={() => setManualModalOpen(true)}
+          refreshKey={activityRefreshKey}
+        />
+      </div>
+
       {!loading && kpiItems.length === 0 && (
         <div className="text-center py-12 text-gray-400">
           No data available. Run a sync first to populate metrics.
         </div>
+      )}
+
+      {manualModalOpen && (
+        <ManualEntryModal
+          open={manualModalOpen}
+          onClose={() => setManualModalOpen(false)}
+          onCreated={() => {
+            setActivityRefreshKey(k => k + 1)
+            setManualModalOpen(false)
+          }}
+          defaultCountry={country || null}
+          defaultBranch={selectedBranches.length === 1 ? selectedBranches[0] : null}
+          branches={branches}
+          countries={countries}
+        />
       )}
     </div>
   )

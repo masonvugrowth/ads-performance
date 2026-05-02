@@ -289,8 +289,50 @@ def country_kpi_summary(
                 kpi["conversions_change"] = None
             items.append(kpi)
 
+        # Aggregate across countries so the dashboard headline can render
+        # period-over-period change even when no country is selected. Sums
+        # raw counters then derives ratios — derived metrics don't average
+        # cleanly, so we recompute them from the summed totals.
+        def _sum_items(by_country: dict) -> dict:
+            tot = {"total_spend": 0.0, "total_revenue": 0.0, "impressions": 0,
+                   "clicks": 0, "conversions": 0, "campaign_count": 0}
+            for code, k in by_country.items():
+                if not is_valid_country(code):
+                    continue
+                tot["total_spend"] += k["total_spend"]
+                tot["total_revenue"] += k["total_revenue"]
+                tot["impressions"] += k["impressions"]
+                tot["clicks"] += k["clicks"]
+                tot["conversions"] += k["conversions"]
+                tot["campaign_count"] += k["campaign_count"]
+            spend, rev = tot["total_spend"], tot["total_revenue"]
+            imp, clk, conv = tot["impressions"], tot["clicks"], tot["conversions"]
+            tot["roas"] = round(rev / spend, 4) if spend > 0 else 0
+            tot["ctr"] = round((clk / imp) * 100, 4) if imp > 0 else 0
+            tot["cpa"] = round(spend / conv, 2) if conv > 0 else 0
+            tot["cr"] = round((conv / clk) * 100, 4) if clk > 0 else 0
+            tot["aov"] = round(rev / conv, 2) if conv > 0 else 0
+            tot["cpc"] = round(spend / clk, 2) if clk > 0 else 0
+            return tot
+
+        curr_total = _sum_items(curr_by_country)
+        prev_total = _sum_items(prev_by_country)
+        aggregate = {
+            **curr_total,
+            "spend_change": calc_change(curr_total["total_spend"], prev_total["total_spend"]),
+            "revenue_change": calc_change(curr_total["total_revenue"], prev_total["total_revenue"]),
+            "roas_change": calc_change(curr_total["roas"], prev_total["roas"]),
+            "ctr_change": calc_change(curr_total["ctr"], prev_total["ctr"]),
+            "cpa_change": calc_change(curr_total["cpa"], prev_total["cpa"]),
+            "cr_change": calc_change(curr_total["cr"], prev_total["cr"]),
+            "aov_change": calc_change(curr_total["aov"], prev_total["aov"]),
+            "cpc_change": calc_change(curr_total["cpc"], prev_total["cpc"]),
+            "conversions_change": calc_change(curr_total["conversions"], prev_total["conversions"]),
+        }
+
         return _api_response(data={
             "items": items,
+            "aggregate": aggregate,
             "currency": display_currency,
             "period": {"from": date_from, "to": date_to},
             "prev_period": {"from": prev_from.isoformat(), "to": prev_to.isoformat()},

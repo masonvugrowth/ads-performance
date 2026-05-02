@@ -9,6 +9,9 @@ const nextConfig = {
       // (country, branches, platform, funnel, range, campaign) so deep links
       // from Meta recommendations keep working.
       { source: '/country', destination: '/', permanent: false },
+      // Activity log was briefly its own page; it's now folded into /
+      // dashboard so users see changes alongside performance.
+      { source: '/activity-log', destination: '/', permanent: false },
     ]
   },
 }
