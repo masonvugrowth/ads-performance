@@ -300,7 +300,7 @@ function RecCard({ rec, expanded, onToggle }: { rec: Recommendation; expanded: b
   const ctaLabel = {
     creative: 'Open Creative Library',
     landing_page: 'Open Landing Pages',
-    country: 'Open Country Dashboard',
+    country: 'Open Dashboard',
   }[rec.deep_link_target]
 
   // Find the from/to indices to draw the bottleneck arrow inside the mini-funnel

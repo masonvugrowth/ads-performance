@@ -25,7 +25,7 @@ const navSections: NavSection[] = [
     label: 'Analytics',
     items: [
       { href: '/', label: 'Dashboard', section: 'analytics' },
-      { href: '/country', label: 'Country Dashboard', section: 'analytics' },
+      { href: '/activity-log', label: 'Activity Log', section: 'analytics' },
       { href: '/booking-matches', label: 'Booking from Ads', section: 'analytics' },
     ],
   },

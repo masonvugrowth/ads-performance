@@ -1,177 +1,82 @@
 'use client'
 
-import { useEffect, useMemo, useState, useCallback, useRef } from 'react'
+import { useEffect, useMemo, useState, useCallback, useRef, Suspense } from 'react'
+import { useSearchParams } from 'next/navigation'
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, Legend,
-  PieChart, Pie, Cell,
 } from 'recharts'
-import { TrendingUp, TrendingDown, ChevronRight, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react'
-import { useSortableRows } from '@/lib/useSortableRows'
-import { formatLocalDate } from '@/lib/dates'
+import { ChevronRight } from 'lucide-react'
 import FunnelRecommendations from '@/components/FunnelRecommendations'
+import {
+  fmtMoney, fmtNum, ChangeTag, getDateRange, DATE_PRESETS,
+  FUNNEL_STAGE_PILL, PLATFORM_PILL,
+} from '@/components/dashboard/dashboardUtils'
+import HorizontalBarBreakdown, { BreakdownItem } from '@/components/dashboard/HorizontalBarBreakdown'
+import ActiveFiltersChips from '@/components/dashboard/ActiveFiltersChips'
+import BranchPie, { BranchBreakdownRow } from '@/components/dashboard/BranchPie'
+import CountryComparisonTable, { CountryKpi } from '@/components/dashboard/CountryComparisonTable'
+import TaBreakdownTable, { TaRow } from '@/components/dashboard/TaBreakdownTable'
+import CampaignBreakdownTable, { CampaignRow } from '@/components/dashboard/CampaignBreakdownTable'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
-interface KPIs {
-  total_spend: number
-  total_revenue: number
-  total_impressions: number
-  total_clicks: number
-  total_conversions: number
-  roas: number
-  ctr: number
-  cpc: number
-  cpa: number
-  conversion_rate: number
-  total_spend_change: number | null
-  total_revenue_change: number | null
-  total_impressions_change: number | null
-  total_clicks_change: number | null
-  total_conversions_change: number | null
-  roas_change: number | null
-  ctr_change: number | null
-  cpc_change: number | null
-  cpa_change: number | null
-  conversion_rate_change: number | null
-  period: { from: string; to: string }
-  prev_period: { from: string; to: string }
-}
-
-interface DailyRow {
-  date: string
-  spend: number
-  revenue: number
-  roas: number
-}
-
-interface AccountRow {
-  account_id: string
-  account_name: string
-  platform: string
-  currency: string
-  spend: number
-  impressions: number
-  clicks: number
-  conversions: number
-  revenue: number
-  roas: number
-  ctr: number
-}
-
-interface FunnelStep {
-  key: string
-  label: string
+type FunnelStage = {
+  name: string
   value: number
   change: number | null
   drop_off: number | null
   drop_off_change: number | null
 }
 
-interface Account {
-  id: string
-  platform: string
-  account_name: string
-  currency: string
-}
+type CountryOption = { code: string; name: string; adset_count: number }
+type Branch = { name: string; currency: string }
 
-interface Branch {
-  name: string
-  currency: string
-}
+type DailyRow = { date: string; spend: number; revenue: number; roas: number }
 
-interface BranchBreakdownRow {
-  branch: string
-  currency: string
-  spend_vnd: number
-  conversions: number
-  revenue_vnd: number
-}
+function DashboardInner() {
+  const search = useSearchParams()
+  // Deep-link inputs (read once on mount, then state owns them).
+  const initialBranches = (search.get('branches') || '').split(',').map(s => s.trim()).filter(Boolean)
+  const initialCountry = (search.get('country') || '').toUpperCase()
+  const initialPlatform = (search.get('platform') || '').toLowerCase()
+  const initialFunnel = (search.get('funnel') || '').toUpperCase()
+  const initialRange = search.get('range') || '7d'
+  const highlightCampaignId = search.get('campaign') || ''
 
-const CURRENCY_SYMBOLS: Record<string, string> = {
-  VND: '₫', TWD: 'NT$', JPY: '¥', USD: '$',
-}
-
-function fmtMoney(n: number, currency: string): string {
-  const symbol = CURRENCY_SYMBOLS[currency] || currency
-  return `${new Intl.NumberFormat('vi-VN', { maximumFractionDigits: 0 }).format(n)} ${symbol}`
-}
-
-function fmtNum(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
-  return new Intl.NumberFormat('vi-VN', { maximumFractionDigits: 0 }).format(n)
-}
-
-// inverseColor: true = "increase is bad" (cost, cpc, cpa, drop-off)
-function ChangeTag({ change, inverseColor = false }: { change: number | null; inverseColor?: boolean }) {
-  if (change === null || change === undefined) return <span className="text-xs text-gray-400">No data</span>
-  const pct = change * 100
-  if (Math.abs(pct) < 0.01) return <span className="text-xs text-gray-400">0%</span>
-  const pos = pct > 0
-  // If inverseColor: positive = bad (red), negative = good (green)
-  const isGood = inverseColor ? !pos : pos
-  return (
-    <span className={`inline-flex items-center gap-0.5 text-xs font-medium ${isGood ? 'text-green-600' : 'text-red-500'}`}>
-      {pos ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
-      {pos ? '+' : ''}{pct.toFixed(1)}%
-    </span>
-  )
-}
-
-// Date presets
-function getDateRange(preset: string): { from: string; to: string } {
-  const today = new Date()
-  const to = formatLocalDate(today)
-  const daysBack = (d: number) => {
-    const dt = new Date(today)
-    dt.setDate(dt.getDate() - d)
-    return formatLocalDate(dt)
-  }
-  switch (preset) {
-    case 'today': return { from: to, to }
-    case 'yesterday': {
-      const y = daysBack(1)
-      return { from: y, to: y }
-    }
-    case '7d': return { from: daysBack(6), to }
-    case '14d': return { from: daysBack(13), to }
-    case '30d': return { from: daysBack(29), to }
-    case 'this_month': {
-      const from = formatLocalDate(new Date(today.getFullYear(), today.getMonth(), 1))
-      return { from, to }
-    }
-    case 'last_month': {
-      const from = formatLocalDate(new Date(today.getFullYear(), today.getMonth() - 1, 1))
-      const last = formatLocalDate(new Date(today.getFullYear(), today.getMonth(), 0))
-      return { from, to: last }
-    }
-    default: return { from: daysBack(6), to }
-  }
-}
-
-export default function DashboardPage() {
-  const [kpis, setKpis] = useState<KPIs | null>(null)
-  const [daily, setDaily] = useState<DailyRow[]>([])
-  const [byAccount, setByAccount] = useState<AccountRow[]>([])
-  const [byBranch, setByBranch] = useState<BranchBreakdownRow[]>([])
-  const [funnel, setFunnel] = useState<FunnelStep[]>([])
-  const [accounts, setAccounts] = useState<Account[]>([])
-  const [branches, setBranches] = useState<Branch[]>([])
-  const [loading, setLoading] = useState(true)
-
-  const [selectedBranches, setSelectedBranches] = useState<string[]>([])
-  const [branchDropdownOpen, setBranchDropdownOpen] = useState(false)
-  const [selectedPlatform, setSelectedPlatform] = useState('')
-  const [datePreset, setDatePreset] = useState('7d')
+  // -------------------- filter state --------------------
+  const [country, setCountry] = useState(initialCountry)
+  const [platform, setPlatform] = useState(initialPlatform)
+  const [funnelStage, setFunnelStage] = useState(initialFunnel)
+  const [selectedBranches, setSelectedBranches] = useState<string[]>(initialBranches)
+  const [datePreset, setDatePreset] = useState(initialRange)
   const [customFrom, setCustomFrom] = useState('')
   const [customTo, setCustomTo] = useState('')
+  const [branchDropdownOpen, setBranchDropdownOpen] = useState(false)
+  const [breakdownMetric, setBreakdownMetric] = useState<'spend' | 'roas' | 'conversions'>('spend')
 
-  const activeCurrency = (() => {
+  // -------------------- data state --------------------
+  const [branches, setBranches] = useState<Branch[]>([])
+  const [countries, setCountries] = useState<CountryOption[]>([])
+  const [kpiItems, setKpiItems] = useState<CountryKpi[]>([])
+  const [responseCurrency, setResponseCurrency] = useState('VND')
+  const [periodInfo, setPeriodInfo] = useState<{ from: string; to: string; prev_from: string; prev_to: string } | null>(null)
+  const [daily, setDaily] = useState<DailyRow[]>([])
+  const [funnelData, setFunnelData] = useState<FunnelStage[]>([])
+  const [byBranch, setByBranch] = useState<BranchBreakdownRow[]>([])
+  const [byPlatform, setByPlatform] = useState<BreakdownItem[]>([])
+  const [byFunnel, setByFunnel] = useState<BreakdownItem[]>([])
+  const [comparison, setComparison] = useState<CountryKpi[]>([])
+  const [taData, setTaData] = useState<TaRow[]>([])
+  const [campaignRows, setCampaignRows] = useState<CampaignRow[]>([])
+  const [loading, setLoading] = useState(true)
+
+  // -------------------- derived --------------------
+  const activeCurrency = useMemo(() => {
     if (selectedBranches.length === 0) return 'VND'
     const currencies = [...new Set(selectedBranches.map(b => branches.find(br => br.name === b)?.currency || 'VND'))]
     return currencies.length === 1 ? currencies[0] : 'VND'
-  })()
+  }, [selectedBranches, branches])
 
   const resolvedRange = useMemo(() => {
     if (datePreset === 'custom' && customFrom && customTo) {
@@ -180,144 +85,227 @@ export default function DashboardPage() {
     return getDateRange(datePreset)
   }, [datePreset, customFrom, customTo])
 
-  const getDateParams = useCallback(() => {
-    return `date_from=${resolvedRange.from}&date_to=${resolvedRange.to}`
-  }, [resolvedRange])
+  const branchParam = selectedBranches.length > 0 ? selectedBranches.join(',') : ''
 
-  const fetchData = useCallback(() => {
-    setLoading(true)
-    const dateParams = getDateParams()
-    const branchParam = selectedBranches.length > 0 ? `&branches=${selectedBranches.join(',')}` : ''
-    const platParam = selectedPlatform ? `&platform=${selectedPlatform}` : ''
-    const qs = `?${dateParams}${branchParam}${platParam}`
+  // -------------------- fetchers --------------------
+  // Build a query string honoring all dashboard filters.
+  const buildQs = useCallback((extra?: Record<string, string>) => {
+    const params = new URLSearchParams({ date_from: resolvedRange.from, date_to: resolvedRange.to })
+    if (country) params.set('country', country)
+    if (platform) params.set('platform', platform)
+    if (funnelStage) params.set('funnel_stage', funnelStage)
+    if (branchParam) params.set('branches', branchParam)
+    if (extra) {
+      for (const [k, v] of Object.entries(extra)) {
+        if (v) params.set(k, v)
+      }
+    }
+    return params.toString()
+  }, [resolvedRange, country, platform, funnelStage, branchParam])
 
-    const opts = { credentials: 'include' as const }
-    Promise.all([
-      fetch(`${API_BASE}/api/dashboard/kpis${qs}`, opts).then(r => r.json()),
-      fetch(`${API_BASE}/api/dashboard/daily${qs}`, opts).then(r => r.json()),
-      fetch(`${API_BASE}/api/dashboard/by-account?${dateParams}${branchParam}${platParam}`, opts).then(r => r.json()),
-      fetch(`${API_BASE}/api/dashboard/funnel${qs}`, opts).then(r => r.json()),
-      fetch(`${API_BASE}/api/dashboard/by-branch?${dateParams}${branchParam}${platParam}`, opts).then(r => r.json()),
-    ])
-      .then(([kpiRes, dailyRes, accountRes, funnelRes, branchRes]) => {
-        if (kpiRes.success) setKpis(kpiRes.data)
-        if (dailyRes.success) setDaily(dailyRes.data)
-        if (accountRes.success) setByAccount(accountRes.data)
-        if (funnelRes.success) setFunnel(funnelRes.data.steps || [])
-        if (branchRes.success) setByBranch(branchRes.data)
-      })
-      .catch(() => {})
-      .finally(() => setLoading(false))
-  }, [getDateParams, selectedBranches, selectedPlatform])
-
+  // Bootstrap: branches list (once).
   useEffect(() => {
-    fetch(`${API_BASE}/api/accounts`, { credentials: 'include' })
-      .then(r => r.json())
-      .then(data => { if (data.success) setAccounts(data.data) })
-      .catch(() => {})
     fetch(`${API_BASE}/api/branches`, { credentials: 'include' })
       .then(r => r.json())
-      .then(data => { if (data.success) setBranches(data.data) })
+      .then(d => { if (d.success) setBranches(d.data) })
       .catch(() => {})
   }, [])
 
+  // Countries list — refetch when branch scope changes (admin sees all by default).
+  useEffect(() => {
+    const qp = branchParam ? `?branches=${encodeURIComponent(branchParam)}` : ''
+    fetch(`${API_BASE}/api/dashboard/country/countries${qp}`, { credentials: 'include' })
+      .then(r => r.json())
+      .then(d => { if (d.success) setCountries(d.data) })
+      .catch(() => {})
+  }, [branchParam])
+
+  // Main data load — re-runs whenever any filter changes.
+  useEffect(() => {
+    if (datePreset === 'custom' && (!customFrom || !customTo)) return
+    setLoading(true)
+
+    const qs = buildQs()
+    const opts = { credentials: 'include' as const }
+
+    // Country drill-down endpoints only fire when a country is selected — they
+    // require the param and would otherwise return 422.
+    const taQs = country ? `country=${country}&${qs}` : null
+
+    Promise.all([
+      fetch(`${API_BASE}/api/dashboard/country?${qs}`, opts).then(r => r.json()),
+      fetch(`${API_BASE}/api/dashboard/country/daily-spend?${qs}`, opts).then(r => r.json()),
+      // Reuse /dashboard/funnel which already accepts platform+branches; conversion
+      // funnel for the selected country uses /country/funnel which needs ?country.
+      country
+        ? fetch(`${API_BASE}/api/dashboard/country/funnel?${taQs}`, opts).then(r => r.json())
+        : fetch(`${API_BASE}/api/dashboard/funnel?${qs}`, opts).then(r => r.json()),
+      fetch(`${API_BASE}/api/dashboard/breakdown/branch?${qs}`, opts).then(r => r.json()),
+      fetch(`${API_BASE}/api/dashboard/breakdown/platform?${qs}`, opts).then(r => r.json()),
+      fetch(`${API_BASE}/api/dashboard/breakdown/funnel?${qs}`, opts).then(r => r.json()),
+      fetch(`${API_BASE}/api/dashboard/country/comparison?${qs}`, opts).then(r => r.json()),
+      taQs ? fetch(`${API_BASE}/api/dashboard/country/ta-breakdown?${taQs}`, opts).then(r => r.json())
+           : Promise.resolve({ success: true, data: [] }),
+      fetch(`${API_BASE}/api/dashboard/country/campaigns?${qs}`, opts).then(r => r.json()),
+    ]).then(([kpi, daily, funnel, brBranch, brPlat, brFun, comp, ta, camp]) => {
+      if (kpi.success && kpi.data) {
+        setKpiItems(kpi.data.items || [])
+        setResponseCurrency(kpi.data.currency || 'VND')
+        if (kpi.data.period && kpi.data.prev_period) {
+          setPeriodInfo({
+            from: kpi.data.period.from,
+            to: kpi.data.period.to,
+            prev_from: kpi.data.prev_period.from,
+            prev_to: kpi.data.prev_period.to,
+          })
+        }
+      }
+      if (daily.success && daily.data) {
+        setDaily((daily.data.series || []).map((s: { date: string; spend: number; revenue: number; roas: number }) => ({
+          date: s.date, spend: s.spend, revenue: s.revenue, roas: s.roas,
+        })))
+      }
+      if (funnel.success && funnel.data) {
+        // /dashboard/funnel returns {steps:[{key,label,value,...}]}, /country/funnel
+        // returns {stages:[{name,value,...}]}. Normalize to FunnelStage shape.
+        const raw = funnel.data.stages || (funnel.data.steps || []).map((s: { label: string; value: number; change: number | null; drop_off: number | null; drop_off_change: number | null }) => ({
+          name: s.label, value: s.value, change: s.change,
+          drop_off: s.drop_off, drop_off_change: s.drop_off_change,
+        }))
+        setFunnelData(raw)
+      }
+      if (brBranch.success && brBranch.data) setByBranch(brBranch.data.items || [])
+      if (brPlat.success && brPlat.data) {
+        setByPlatform((brPlat.data.items || []).map((it: { platform: string; spend: number; revenue: number; conversions: number; roas: number; spend_change: number | null; roas_change: number | null; conversions_change: number | null }) => ({
+          key: it.platform,
+          label: it.platform.charAt(0).toUpperCase() + it.platform.slice(1),
+          badgeClass: PLATFORM_PILL[it.platform],
+          spend: it.spend, revenue: it.revenue, conversions: it.conversions,
+          roas: it.roas,
+          spend_change: it.spend_change, roas_change: it.roas_change,
+          conversions_change: it.conversions_change,
+        })))
+      }
+      if (brFun.success && brFun.data) {
+        setByFunnel((brFun.data.items || []).map((it: { funnel_stage: string; spend: number; revenue: number; conversions: number; roas: number; spend_change: number | null; roas_change: number | null; conversions_change: number | null }) => ({
+          key: it.funnel_stage,
+          label: it.funnel_stage,
+          badgeClass: FUNNEL_STAGE_PILL[it.funnel_stage] || FUNNEL_STAGE_PILL.Unknown,
+          spend: it.spend, revenue: it.revenue, conversions: it.conversions,
+          roas: it.roas,
+          spend_change: it.spend_change, roas_change: it.roas_change,
+          conversions_change: it.conversions_change,
+        })))
+      }
+      if (comp.success) setComparison(comp.data || [])
+      if (ta.success) setTaData(Array.isArray(ta.data) ? ta.data : [])
+      if (camp.success) setCampaignRows(camp.data?.items || [])
+      setLoading(false)
+    }).catch(() => setLoading(false))
+  }, [buildQs, datePreset, customFrom, customTo, country, platform, funnelStage, branchParam])
+
+  // Branch dropdown click-outside.
   const branchDropdownRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
-    function handleClickOutside(e: MouseEvent) {
+    function onClick(e: MouseEvent) {
       if (branchDropdownRef.current && !branchDropdownRef.current.contains(e.target as Node)) {
         setBranchDropdownOpen(false)
       }
     }
-    document.addEventListener('mousedown', handleClickOutside)
-    return () => document.removeEventListener('mousedown', handleClickOutside)
+    document.addEventListener('mousedown', onClick)
+    return () => document.removeEventListener('mousedown', onClick)
   }, [])
 
   const toggleBranch = (name: string) => {
-    setSelectedBranches(prev =>
-      prev.includes(name) ? prev.filter(b => b !== name) : [...prev, name]
-    )
+    setSelectedBranches(prev => prev.includes(name) ? prev.filter(b => b !== name) : [...prev, name])
   }
 
-  useEffect(() => { fetchData() }, [fetchData])
+  // -------------------- aggregated KPIs --------------------
+  // /dashboard/country returns one row per country. Sum to get the dashboard
+  // headline numbers; when ?country is set the array has one item already.
+  const selectedKpi = useMemo(() => {
+    if (kpiItems.length === 0) return null
+    if (country) return kpiItems.find(k => k.country_code === country) || null
+    return kpiItems.reduce((acc, k) => ({
+      total_spend: acc.total_spend + k.total_spend,
+      total_revenue: acc.total_revenue + k.total_revenue,
+      impressions: acc.impressions + k.impressions,
+      clicks: acc.clicks + k.clicks,
+      conversions: acc.conversions + k.conversions,
+      campaign_count: acc.campaign_count + k.campaign_count,
+    }), { total_spend: 0, total_revenue: 0, impressions: 0, clicks: 0, conversions: 0, campaign_count: 0 })
+  }, [kpiItems, country])
 
-  if (loading && !kpis) {
+  const countryKpiForChange = country ? kpiItems.find(k => k.country_code === country) : null
+
+  // -------------------- chips --------------------
+  const chips = useMemo(() => {
+    const out: { key: string; label: string; value: string; onClear: () => void }[] = []
+    if (country) {
+      out.push({
+        key: 'country', label: 'Country',
+        value: countries.find(c => c.code === country)?.name || country,
+        onClear: () => setCountry(''),
+      })
+    }
+    if (platform) {
+      out.push({
+        key: 'platform', label: 'Platform',
+        value: platform.charAt(0).toUpperCase() + platform.slice(1),
+        onClear: () => setPlatform(''),
+      })
+    }
+    if (funnelStage) {
+      out.push({
+        key: 'funnel', label: 'Funnel',
+        value: funnelStage,
+        onClear: () => setFunnelStage(''),
+      })
+    }
+    selectedBranches.forEach(b => {
+      out.push({
+        key: `branch-${b}`, label: 'Branch',
+        value: b,
+        onClear: () => setSelectedBranches(prev => prev.filter(x => x !== b)),
+      })
+    })
+    return out
+  }, [country, platform, funnelStage, selectedBranches, countries])
+
+  const resetAll = () => {
+    setCountry(''); setPlatform(''); setFunnelStage('')
+    setSelectedBranches([])
+  }
+
+  // -------------------- render --------------------
+  if (loading && !selectedKpi) {
     return <div className="flex items-center justify-center h-64"><div className="text-gray-500">Loading dashboard...</div></div>
   }
 
-  // inverseColor = true means "increase is bad" (cost metrics)
-  const kpiRow1 = [
-    { label: `Cost (${activeCurrency})`, value: kpis ? fmtMoney(kpis.total_spend, activeCurrency) : '--', change: kpis?.total_spend_change, inverse: true },
-    { label: `Revenue (${activeCurrency})`, value: kpis ? fmtMoney(kpis.total_revenue, activeCurrency) : '--', change: kpis?.total_revenue_change, inverse: false },
-    { label: `CPC (${activeCurrency})`, value: kpis ? fmtMoney(kpis.cpc, activeCurrency) : '--', change: kpis?.cpc_change, inverse: true },
-    { label: 'ROAS', value: kpis ? kpis.roas.toFixed(2) : '--', change: kpis?.roas_change, inverse: false },
-  ]
-
-  const kpiRow2 = [
-    { label: 'Clicks', value: kpis ? fmtNum(kpis.total_clicks) : '--', change: kpis?.total_clicks_change, inverse: false },
-    { label: 'Impressions', value: kpis ? fmtNum(kpis.total_impressions) : '--', change: kpis?.total_impressions_change, inverse: false },
-    { label: 'Conversions', value: kpis ? fmtNum(kpis.total_conversions) : '--', change: kpis?.total_conversions_change, inverse: false },
-    { label: 'Conversion rate', value: kpis ? `${(kpis.conversion_rate * 100).toFixed(4)}%` : '--', change: kpis?.conversion_rate_change, inverse: false },
-  ]
-
-  // Funnel bar widths (proportional to max value)
-  const funnelMax = funnel.length > 0 ? Math.max(...funnel.map(s => s.value), 1) : 1
+  const funnelMax = funnelData.length > 0 ? Math.max(...funnelData.map(s => s.value), 1) : 1
 
   return (
     <div>
-      {/* Header + Filters */}
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
+      {/* Header + filter bar */}
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
         <h1 className="text-2xl font-bold text-blue-600">ADS Performance</h1>
         <div className="flex flex-wrap items-center gap-2">
-          {/* Date presets */}
-          <select
-            value={datePreset}
-            onChange={(e) => setDatePreset(e.target.value)}
-            className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-          >
-            <option value="today">Today</option>
-            <option value="yesterday">Yesterday</option>
-            <option value="7d">Last 7 days</option>
-            <option value="14d">Last 14 days</option>
-            <option value="30d">Last 30 days</option>
-            <option value="this_month">This month</option>
-            <option value="last_month">Last month</option>
-            <option value="custom">Custom range</option>
+          <select value={datePreset} onChange={e => setDatePreset(e.target.value)}
+            className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+            {DATE_PRESETS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
           </select>
-
           {datePreset === 'custom' && (
             <>
-              <input
-                type="date"
-                value={customFrom}
-                onChange={(e) => setCustomFrom(e.target.value)}
-                className="px-2 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
+              <input type="date" value={customFrom} onChange={e => setCustomFrom(e.target.value)}
+                className="px-2 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
               <span className="text-gray-400">→</span>
-              <input
-                type="date"
-                value={customTo}
-                onChange={(e) => setCustomTo(e.target.value)}
-                className="px-2 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
+              <input type="date" value={customTo} onChange={e => setCustomTo(e.target.value)}
+                className="px-2 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
             </>
           )}
-
-          {/* Platform filter */}
-          <select
-            value={selectedPlatform}
-            onChange={(e) => setSelectedPlatform(e.target.value)}
-            className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-          >
-            <option value="">All Platforms</option>
-            <option value="meta">Meta Ads</option>
-            <option value="google">Google Ads</option>
-            <option value="tiktok">TikTok Ads</option>
-          </select>
-
-          {/* Branch filter (multi-select) */}
           <div className="relative" ref={branchDropdownRef}>
             <button
-              onClick={() => setBranchDropdownOpen(!branchDropdownOpen)}
+              onClick={() => setBranchDropdownOpen(o => !o)}
               className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white min-w-[180px] text-left flex items-center justify-between gap-2"
             >
               <span className="truncate">
@@ -330,26 +318,17 @@ export default function DashboardPage() {
               <svg className={`w-4 h-4 text-gray-400 transition-transform ${branchDropdownOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
             </button>
             {branchDropdownOpen && (
-              <div className="absolute z-50 mt-1 w-56 bg-white border border-gray-200 rounded-lg shadow-lg py-1">
+              <div className="absolute z-50 mt-1 w-56 bg-white border border-gray-200 rounded-lg shadow-lg py-1 right-0">
                 {selectedBranches.length > 0 && (
                   <button
                     onClick={() => setSelectedBranches([])}
                     className="w-full px-3 py-1.5 text-xs text-blue-600 hover:bg-gray-50 text-left"
-                  >
-                    Clear all
-                  </button>
+                  >Clear all</button>
                 )}
                 {branches.map(b => (
-                  <label
-                    key={b.name}
-                    className="flex items-center gap-2 px-3 py-2 hover:bg-gray-50 cursor-pointer text-sm"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={selectedBranches.includes(b.name)}
-                      onChange={() => toggleBranch(b.name)}
-                      className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                    />
+                  <label key={b.name} className="flex items-center gap-2 px-3 py-2 hover:bg-gray-50 cursor-pointer text-sm">
+                    <input type="checkbox" checked={selectedBranches.includes(b.name)} onChange={() => toggleBranch(b.name)}
+                      className="rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
                     <span>{b.name}</span>
                     <span className="text-gray-400 text-xs ml-auto">{b.currency}</span>
                   </label>
@@ -357,51 +336,121 @@ export default function DashboardPage() {
               </div>
             )}
           </div>
+          <select value={country} onChange={e => setCountry(e.target.value)}
+            className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+            <option value="">All Countries</option>
+            {countries.map(c => <option key={c.code} value={c.code}>{c.name}</option>)}
+          </select>
+          <select value={platform} onChange={e => setPlatform(e.target.value)}
+            className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+            <option value="">All Platforms</option>
+            <option value="meta">Meta</option>
+            <option value="google">Google</option>
+            <option value="tiktok">TikTok</option>
+          </select>
+          <select value={funnelStage} onChange={e => setFunnelStage(e.target.value)}
+            className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+            <option value="">All Funnel</option>
+            <option value="TOF">TOF (Cold)</option>
+            <option value="MOF">MOF (Remarketing)</option>
+            <option value="BOF">BOF (Bottom)</option>
+          </select>
         </div>
       </div>
 
+      {/* Active filter chips */}
+      <ActiveFiltersChips chips={chips} onResetAll={resetAll} />
+
       {/* Period info */}
-      {kpis?.period && (
+      {periodInfo && (
         <p className="text-xs text-gray-400 mb-4">
-          {kpis.period.from} → {kpis.period.to} &nbsp;vs&nbsp; {kpis.prev_period.from} → {kpis.prev_period.to}
+          {periodInfo.from} → {periodInfo.to} &nbsp;vs&nbsp; {periodInfo.prev_from} → {periodInfo.prev_to}
         </p>
       )}
 
-      {/* KPI Row 1 */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
-        {kpiRow1.map((card) => (
-          <div key={card.label} className="bg-white rounded-xl border border-gray-200 p-5">
-            <p className="text-xs text-gray-500 mb-1">{card.label}</p>
-            <p className="text-2xl font-bold text-gray-900">{card.value}</p>
-            <div className="mt-2"><ChangeTag change={card.change ?? null} inverseColor={card.inverse} /></div>
-          </div>
-        ))}
-      </div>
+      {/* KPI summary — headline + ROAS decomposition. Shown for both country=
+          empty (aggregated) and country=set (per-country). The decomposition
+          row is only meaningful with a single country since CR/AOV/CPC don't
+          aggregate cleanly across countries. */}
+      {selectedKpi && (() => {
+        const cr = selectedKpi.clicks ? (selectedKpi.conversions / selectedKpi.clicks) * 100 : 0
+        const aov = selectedKpi.conversions ? selectedKpi.total_revenue / selectedKpi.conversions : 0
+        const cpc = selectedKpi.clicks ? selectedKpi.total_spend / selectedKpi.clicks : 0
+        const roas = selectedKpi.total_spend ? selectedKpi.total_revenue / selectedKpi.total_spend : 0
+        const ctr = selectedKpi.impressions ? (selectedKpi.clicks / selectedKpi.impressions) * 100 : 0
+        const cpa = selectedKpi.conversions ? selectedKpi.total_spend / selectedKpi.conversions : 0
+        const headline = [
+          { label: `Spend (${responseCurrency})`, value: fmtMoney(selectedKpi.total_spend, responseCurrency), change: countryKpiForChange?.spend_change ?? null, inverse: true },
+          { label: `Revenue (${responseCurrency})`, value: fmtMoney(selectedKpi.total_revenue, responseCurrency), change: countryKpiForChange?.revenue_change ?? null, inverse: false },
+          { label: 'ROAS', value: roas ? roas.toFixed(2) + 'x' : '0', change: countryKpiForChange?.roas_change ?? null, inverse: false },
+          { label: 'CTR', value: ctr ? ctr.toFixed(1) + '%' : '0%', change: countryKpiForChange?.ctr_change ?? null, inverse: false },
+          { label: `CPA (${responseCurrency})`, value: cpa ? fmtMoney(Math.round(cpa), responseCurrency) : '--', change: countryKpiForChange?.cpa_change ?? null, inverse: true },
+          { label: 'Conversions', value: fmtNum(selectedKpi.conversions), change: countryKpiForChange?.conversions_change ?? null, inverse: false },
+        ]
+        const decomp = country ? [
+          { label: 'CR (Conversion Rate)', value: cr ? cr.toFixed(2) + '%' : '--', change: countryKpiForChange?.cr_change ?? null, inverse: false },
+          { label: `AOV (${responseCurrency})`, value: aov ? fmtMoney(Math.round(aov), responseCurrency) : '--', change: countryKpiForChange?.aov_change ?? null, inverse: false },
+          { label: `CPC (${responseCurrency})`, value: cpc ? fmtMoney(Math.round(cpc), responseCurrency) : '--', change: countryKpiForChange?.cpc_change ?? null, inverse: true },
+        ] : null
 
-      {/* KPI Row 2 */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-        {kpiRow2.map((card) => (
-          <div key={card.label} className="bg-white rounded-xl border border-gray-200 p-5">
-            <p className="text-xs text-gray-500 mb-1">{card.label}</p>
-            <p className="text-2xl font-bold text-gray-900">{card.value}</p>
-            <div className="mt-2"><ChangeTag change={card.change ?? null} inverseColor={card.inverse} /></div>
+        const Card = ({ k }: { k: typeof headline[number] }) => (
+          <div className="bg-white rounded-xl border border-gray-200 p-5">
+            <p className="text-xs text-gray-500 mb-1 truncate">{k.label}</p>
+            <p className="text-2xl font-bold text-gray-900">{k.value}</p>
+            <div className="mt-2"><ChangeTag change={k.change} inverseColor={k.inverse} /></div>
           </div>
-        ))}
-      </div>
+        )
 
-      {/* Branch breakdown pies */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+        return (
+          <div className="space-y-4 mb-6">
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+              {headline.map(k => <Card key={k.label} k={k} />)}
+            </div>
+            {decomp && (
+              <div>
+                <div className="flex items-center gap-2 mb-2 text-[11px] uppercase tracking-wider text-gray-400 font-semibold">
+                  ROAS decomposition
+                  <span className="text-gray-300 normal-case font-normal tracking-normal">ROAS = CR × AOV / CPC</span>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  {decomp.map(k => <Card key={k.label} k={k} />)}
+                </div>
+              </div>
+            )}
+          </div>
+        )
+      })()}
+
+      {/* Cross-filter breakdown row */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
         <BranchPie
-          title="Branch by Cost (VND)"
-          rows={byBranch}
+          title="By Branch (Cost)"
+          rows={byBranch as BranchBreakdownRow[]}
           valueKey="spend_vnd"
           selectedBranches={selectedBranches}
           onToggle={toggleBranch}
           valueFormatter={(v) => fmtMoney(v, 'VND')}
         />
+        <HorizontalBarBreakdown
+          title="By Platform"
+          items={byPlatform}
+          currency={responseCurrency}
+          selectedKey={platform}
+          onSelect={(k) => setPlatform(prev => prev === k ? '' : k)}
+          metric={breakdownMetric}
+          onMetricChange={setBreakdownMetric}
+        />
+        <HorizontalBarBreakdown
+          title="By Funnel"
+          items={byFunnel}
+          currency={responseCurrency}
+          selectedKey={funnelStage}
+          onSelect={(k) => setFunnelStage(prev => prev === k ? '' : k)}
+          metric={breakdownMetric}
+        />
         <BranchPie
-          title="Branch by Conversion"
-          rows={byBranch}
+          title="By Branch (Conversions)"
+          rows={byBranch as BranchBreakdownRow[]}
           valueKey="conversions"
           selectedBranches={selectedBranches}
           onToggle={toggleBranch}
@@ -409,240 +458,138 @@ export default function DashboardPage() {
         />
       </div>
 
-      {/* Funnel */}
-      <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
-        <h2 className="text-sm font-semibold text-gray-700 mb-5">Conversion Funnel</h2>
-        <div className="space-y-3">
-          {funnel.map((step, i) => {
-            const widthPct = Math.max((step.value / funnelMax) * 100, 4)
-            return (
-              <div key={step.key}>
-                {i > 0 && (
-                  <div className="flex items-center gap-2 ml-4 mb-1">
-                    <ChevronRight className="w-3 h-3 text-gray-300" />
-                    {step.drop_off !== null && (
-                      <span className="text-xs text-gray-400">
-                        {(step.drop_off * 100).toFixed(1)}% drop-off
-                      </span>
-                    )}
-                    {step.drop_off_change !== null && (
-                      <ChangeTag change={step.drop_off_change} inverseColor />
-                    )}
-                  </div>
-                )}
-                <div className="flex items-center gap-4">
-                  <div
-                    className="bg-blue-100 rounded-lg py-3 px-4 flex items-center justify-between transition-all"
-                    style={{ width: `${widthPct}%`, minWidth: '180px' }}
-                  >
-                    <span className="text-xs text-gray-600">{step.label}</span>
-                    <span className="text-lg font-bold text-gray-900 ml-2">
-                      {fmtNum(step.value)}
-                    </span>
-                  </div>
-                  <div className="shrink-0">
-                    <ChangeTag change={step.change} />
+      {/* Country comparison — always shown, click row to filter */}
+      {comparison.length > 0 && (
+        <div className="mb-6">
+          <CountryComparisonTable
+            rows={comparison}
+            currency={responseCurrency}
+            selectedCountry={country}
+            onSelectCountry={setCountry}
+          />
+        </div>
+      )}
+
+      {/* Conversion funnel (always shown — global when country empty, per-country otherwise) */}
+      {funnelData.length > 0 && (
+        <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
+          <h2 className="text-sm font-semibold text-gray-700 mb-5">
+            Conversion Funnel
+            {country && <span className="text-gray-400 font-normal ml-2">— {countries.find(c => c.code === country)?.name || country}</span>}
+          </h2>
+          <div className="space-y-3">
+            {funnelData.map((stage, i) => {
+              const widthPct = Math.max((stage.value / funnelMax) * 100, 4)
+              return (
+                <div key={`${stage.name}-${i}`}>
+                  {i > 0 && (
+                    <div className="flex items-center gap-2 ml-4 mb-1">
+                      <ChevronRight className="w-3 h-3 text-gray-300" />
+                      {stage.drop_off !== null && (
+                        <span className="text-xs text-gray-400">
+                          {(stage.drop_off * 100).toFixed(1)}% drop-off
+                        </span>
+                      )}
+                      {stage.drop_off_change !== null && (
+                        <ChangeTag change={stage.drop_off_change} inverseColor />
+                      )}
+                    </div>
+                  )}
+                  <div className="flex items-center gap-4">
+                    <div className="bg-blue-100 rounded-lg py-3 px-4 flex items-center justify-between transition-all"
+                      style={{ width: `${widthPct}%`, minWidth: '180px' }}>
+                      <span className="text-xs text-gray-600">{stage.name}</span>
+                      <span className="text-lg font-bold text-gray-900 ml-2">{fmtNum(stage.value)}</span>
+                    </div>
+                    <ChangeTag change={stage.change} />
                   </div>
                 </div>
-              </div>
-            )
-          })}
-          {funnel.length === 0 && (
-            <p className="text-gray-400 text-sm text-center py-4">No funnel data. Run a sync first.</p>
-          )}
+              )
+            })}
+          </div>
         </div>
-      </div>
+      )}
 
-      {/* Funnel Recommendations — bottlenecks broken down by Channel × Country
-          × Funnel × TA, with deep-link to the page that owns each root cause. */}
+      {/* Country drill-down: TA breakdown */}
+      {country && taData.length > 0 && (
+        <div className="mb-6">
+          <TaBreakdownTable
+            rows={taData}
+            currency={responseCurrency}
+            title={`TA Breakdown — ${countries.find(c => c.code === country)?.name || country}`}
+          />
+        </div>
+      )}
+
+      {/* Campaign breakdown — always shown, scoped to active filters */}
+      {campaignRows.length > 0 && (
+        <div className="mb-6">
+          <CampaignBreakdownTable
+            rows={campaignRows}
+            currency={responseCurrency}
+            highlightId={highlightCampaignId}
+            title={
+              country
+                ? `Campaign Breakdown — ${countries.find(c => c.code === country)?.name || country}`
+                : 'Campaign Breakdown'
+            }
+          />
+        </div>
+      )}
+
+      {/* Spend/Revenue + ROAS timeseries */}
+      {daily.length > 0 && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+          <div className="bg-white rounded-xl border border-gray-200 p-6">
+            <h2 className="text-sm font-semibold text-gray-700 mb-4">Spend vs Revenue — {responseCurrency}</h2>
+            <ResponsiveContainer width="100%" height={260}>
+              <AreaChart data={daily}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                <XAxis dataKey="date" tick={{ fontSize: 11 }} tickFormatter={(v) => v.slice(5)} />
+                <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => fmtNum(v)} />
+                <Tooltip formatter={(v: number) => fmtMoney(v, responseCurrency)} labelFormatter={(l) => `Date: ${l}`} />
+                <Legend />
+                <Area type="monotone" dataKey="spend" name="Spend" stroke="#ef4444" fill="#fef2f2" strokeWidth={2} />
+                <Area type="monotone" dataKey="revenue" name="Revenue" stroke="#10b981" fill="#ecfdf5" strokeWidth={2} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+          <div className="bg-white rounded-xl border border-gray-200 p-6">
+            <h2 className="text-sm font-semibold text-gray-700 mb-4">ROAS</h2>
+            <ResponsiveContainer width="100%" height={260}>
+              <AreaChart data={daily}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                <XAxis dataKey="date" tick={{ fontSize: 11 }} tickFormatter={(v) => v.slice(5)} />
+                <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `${v.toFixed(1)}x`} />
+                <Tooltip formatter={(v: number) => `${v.toFixed(2)}x`} labelFormatter={(l) => `Date: ${l}`} />
+                <Area type="monotone" dataKey="roas" name="ROAS" stroke="#3b82f6" fill="#eff6ff" strokeWidth={2} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
+
+      {/* AI funnel recommendations — deep-links back into this page with filters set */}
       <FunnelRecommendations
-        branches={selectedBranches.join(',')}
-        platform={selectedPlatform}
+        branches={branchParam}
+        platform={platform}
         dateFrom={resolvedRange.from}
         dateTo={resolvedRange.to}
       />
 
-      {/* Charts Row */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-        <div className="bg-white rounded-xl border border-gray-200 p-6">
-          <h2 className="text-sm font-semibold text-gray-700 mb-4">Spend vs Revenue — {activeCurrency}</h2>
-          <ResponsiveContainer width="100%" height={280}>
-            <AreaChart data={daily}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-              <XAxis dataKey="date" tick={{ fontSize: 11 }} tickFormatter={(v) => v.slice(5)} />
-              <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => fmtNum(v)} />
-              <Tooltip formatter={(v: number) => fmtMoney(v, activeCurrency)} labelFormatter={(l) => `Date: ${l}`} />
-              <Legend />
-              <Area type="monotone" dataKey="spend" name="Spend" stroke="#ef4444" fill="#fef2f2" strokeWidth={2} />
-              <Area type="monotone" dataKey="revenue" name="Revenue" stroke="#10b981" fill="#ecfdf5" strokeWidth={2} />
-            </AreaChart>
-          </ResponsiveContainer>
+      {!loading && kpiItems.length === 0 && (
+        <div className="text-center py-12 text-gray-400">
+          No data available. Run a sync first to populate metrics.
         </div>
-
-        <div className="bg-white rounded-xl border border-gray-200 p-6">
-          <h2 className="text-sm font-semibold text-gray-700 mb-4">ROAS</h2>
-          <ResponsiveContainer width="100%" height={280}>
-            <AreaChart data={daily}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-              <XAxis dataKey="date" tick={{ fontSize: 11 }} tickFormatter={(v) => v.slice(5)} />
-              <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `${v.toFixed(1)}x`} />
-              <Tooltip formatter={(v: number) => `${v.toFixed(2)}x`} labelFormatter={(l) => `Date: ${l}`} />
-              <Area type="monotone" dataKey="roas" name="ROAS" stroke="#3b82f6" fill="#eff6ff" strokeWidth={2} />
-            </AreaChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
-
-      {/* Performance by Branch */}
-      <PerformanceByBranchTable rows={byAccount} />
-    </div>
-  )
-}
-
-const PIE_COLORS = ['#a68a64', '#b8a7d9', '#a3c982', '#7dc4c2', '#eb7373', '#f4b971']
-
-function BranchPie({
-  title, rows, valueKey, selectedBranches, onToggle, valueFormatter,
-}: {
-  title: string
-  rows: BranchBreakdownRow[]
-  valueKey: 'spend_vnd' | 'conversions'
-  selectedBranches: string[]
-  onToggle: (name: string) => void
-  valueFormatter: (v: number) => string
-}) {
-  const data = rows
-    .map((r) => ({ name: r.branch, value: Number(r[valueKey]) || 0 }))
-    .filter((d) => d.value > 0)
-  const hasFilter = selectedBranches.length > 0
-  const total = data.reduce((s, d) => s + d.value, 0)
-
-  return (
-    <div className="bg-white rounded-xl border border-gray-200 p-6">
-      <h2 className="text-sm font-semibold text-gray-700 mb-4">{title}</h2>
-      {data.length === 0 ? (
-        <p className="text-gray-400 text-sm text-center py-16">No data</p>
-      ) : (
-        <ResponsiveContainer width="100%" height={260}>
-          <PieChart>
-            <Pie
-              data={data}
-              dataKey="value"
-              nameKey="name"
-              cx="40%"
-              cy="50%"
-              outerRadius={95}
-              label={({ percent }) => `${((percent || 0) * 100).toFixed(1)}%`}
-              labelLine={false}
-              onClick={(d) => onToggle((d as { name: string }).name)}
-              cursor="pointer"
-            >
-              {data.map((entry, i) => {
-                const dim = hasFilter && !selectedBranches.includes(entry.name)
-                return (
-                  <Cell
-                    key={entry.name}
-                    fill={PIE_COLORS[i % PIE_COLORS.length]}
-                    fillOpacity={dim ? 0.3 : 1}
-                    stroke={selectedBranches.includes(entry.name) ? '#111827' : '#fff'}
-                    strokeWidth={selectedBranches.includes(entry.name) ? 2 : 1}
-                  />
-                )
-              })}
-            </Pie>
-            <Tooltip
-              formatter={(v: number) => [
-                `${valueFormatter(v)} (${total > 0 ? ((v / total) * 100).toFixed(1) : '0'}%)`,
-                '',
-              ]}
-            />
-            <Legend
-              layout="vertical"
-              verticalAlign="middle"
-              align="right"
-              iconType="circle"
-              wrapperStyle={{ fontSize: 12, cursor: 'pointer' }}
-              onClick={(e) => onToggle((e as { value: string }).value)}
-            />
-          </PieChart>
-        </ResponsiveContainer>
       )}
     </div>
   )
 }
 
-function PerformanceByBranchTable({ rows }: { rows: AccountRow[] }) {
-  const { sorted, sortBy, sortDir, toggleSort } = useSortableRows<AccountRow>(rows)
-
-  const SortHeader = ({ col, label, align = 'right' }: { col: keyof AccountRow; label: string; align?: 'left' | 'right' }) => {
-    const active = sortBy === col
-    return (
-      <th className={`${align === 'right' ? 'text-right' : 'text-left'} py-3 px-2 text-gray-500 font-medium cursor-pointer select-none hover:text-gray-700`} onClick={() => toggleSort(col)}>
-        <span className={`inline-flex items-center gap-1 ${align === 'right' ? 'justify-end w-full' : ''}`}>
-          {label}
-          {active
-            ? (sortDir === 'asc' ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />)
-            : <ArrowUpDown className="w-3 h-3 opacity-40" />}
-        </span>
-      </th>
-    )
-  }
-
+export default function DashboardPage() {
   return (
-    <div className="bg-white rounded-xl border border-gray-200 p-6">
-      <h2 className="text-sm font-semibold text-gray-700 mb-4">Performance by Branch</h2>
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-gray-100">
-              <SortHeader col="platform" label="Platform" align="left" />
-              <SortHeader col="account_name" label="Branch" align="left" />
-              <SortHeader col="spend" label="Spend" />
-              <SortHeader col="revenue" label="Revenue" />
-              <SortHeader col="roas" label="ROAS" />
-              <SortHeader col="clicks" label="Clicks" />
-              <SortHeader col="ctr" label="CTR" />
-              <SortHeader col="conversions" label="Conversions" />
-            </tr>
-          </thead>
-          <tbody>
-            {sorted.map((row) => {
-                const platformColors: Record<string, string> = {
-                  meta: 'bg-blue-50 text-blue-700',
-                  google: 'bg-green-50 text-green-700',
-                  tiktok: 'bg-pink-50 text-pink-700',
-                }
-                const platformLabel = (row.platform || 'meta').charAt(0).toUpperCase() + (row.platform || 'meta').slice(1)
-                return (
-                <tr key={row.account_id} className="border-b border-gray-50 hover:bg-gray-50">
-                  <td className="py-3 px-2">
-                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${platformColors[row.platform] || 'bg-gray-50 text-gray-600'}`}>
-                      {platformLabel}
-                    </span>
-                  </td>
-                  <td className="py-3 px-2">
-                    <span className="font-medium text-gray-900">{row.account_name}</span>
-                    <span className="text-xs text-gray-400 ml-1">({row.currency})</span>
-                  </td>
-                  <td className="py-3 px-2 text-right text-gray-700">{fmtMoney(row.spend, row.currency)}</td>
-                  <td className="py-3 px-2 text-right text-gray-700">{fmtMoney(row.revenue, row.currency)}</td>
-                  <td className="py-3 px-2 text-right">
-                    <span className={`font-medium ${row.roas >= 1 ? 'text-green-600' : 'text-red-600'}`}>
-                      {row.roas.toFixed(2)}x
-                    </span>
-                  </td>
-                  <td className="py-3 px-2 text-right text-gray-700">{fmtNum(row.clicks)}</td>
-                  <td className="py-3 px-2 text-right text-gray-700">{(row.ctr * 100).toFixed(2)}%</td>
-                  <td className="py-3 px-2 text-right text-gray-700">{row.conversions}</td>
-                </tr>
-              )
-            })}
-            {rows.length === 0 && (
-              <tr><td colSpan={8} className="py-8 text-center text-gray-400">No metrics data yet.</td></tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-    </div>
+    <Suspense fallback={<div className="flex items-center justify-center h-64"><div className="text-gray-500">Loading...</div></div>}>
+      <DashboardInner />
+    </Suspense>
   )
 }

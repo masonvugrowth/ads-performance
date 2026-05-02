@@ -497,9 +497,10 @@ function SettingsColumn({
   const setCountry = ctx.ad_set_country || ctx.ad_group_country
   const setLabel = platform === 'meta' ? 'Ad set' : 'Ad group'
 
-  // Deep-link to the Country Dashboard pre-filtered to this rec's branch +
-  // country + 7d window so the user can see why ROAS dropped (CR vs AOV vs
-  // CPC). Highlights the originating campaign in the campaign breakdown.
+  // Deep-link to the merged ADS Performance dashboard pre-filtered to this
+  // rec's branch + country + 7d window so the user can see why ROAS dropped
+  // (CR vs AOV vs CPC). Highlights the originating campaign in the campaign
+  // breakdown.
   const branchKey = accountNameToBranchKey(ctx.account_name)
   const dashCountry = rec.targeted_country || setCountry || ctx.campaign_country || ''
   const canDeepLink = platform === 'meta' && Boolean(branchKey) && Boolean(rec.campaign_id || rec.ad_set_id || rec.ad_id)
@@ -512,7 +513,7 @@ function SettingsColumn({
     params.set('range', '7d')
     if (rec.funnel_stage) params.set('funnel', rec.funnel_stage)
     if (rec.campaign_id) params.set('campaign', rec.campaign_id)
-    return `/country?${params.toString()}`
+    return `/?${params.toString()}`
   })()
 
   const rows: Array<[string, React.ReactNode]> = []
@@ -597,10 +598,10 @@ function SettingsColumn({
         <Link
           href={dashHref}
           className="mt-1 inline-flex w-full items-center justify-center gap-1.5 rounded border border-blue-200 bg-white px-3 py-2 text-xs font-semibold text-blue-700 hover:bg-blue-50"
-          title="Open in Country Dashboard — see CR / AOV / CPC for this campaign"
+          title="Open in Dashboard — see CR / AOV / CPC for this campaign"
         >
           <ExternalLink className="w-3 h-3" />
-          Open in Country Dashboard
+          Open in Dashboard
         </Link>
       )}
     </div>

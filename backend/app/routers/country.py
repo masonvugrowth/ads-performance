@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import exists, func, or_
 from sqlalchemy.orm import Session, aliased
 
+from app.core.branches import BRANCH_ACCOUNT_MAP, BRANCH_CURRENCY
 from app.core.permissions import scoped_account_ids
 from app.database import get_db
 from app.dependencies.auth import require_section
@@ -842,6 +843,319 @@ def country_campaign_breakdown(
             "period": {"from": date_from, "to": date_to},
             "prev_period": {"from": prev_from.isoformat(), "to": prev_to.isoformat()},
         })
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
+def _breakdown_derive(spend: float, revenue: float, impressions: int,
+                      clicks: int, conversions: int) -> dict:
+    """Shared metric derivations for breakdown rows."""
+    return {
+        "roas": round(revenue / spend, 4) if spend > 0 else 0,
+        "ctr": round((clicks / impressions) * 100, 4) if impressions > 0 else 0,
+        "cpc": round(spend / clicks, 2) if clicks > 0 else 0,
+        "cpa": round(spend / conversions, 2) if conversions > 0 else 0,
+        "cr": round((conversions / clicks) * 100, 4) if clicks > 0 else 0,
+        "aov": round(revenue / conversions, 2) if conversions > 0 else 0,
+    }
+
+
+def _breakdown_changes(cur: dict, prev: dict | None) -> dict:
+    """Period-over-period deltas for the standard breakdown card metrics."""
+    if not prev:
+        return {
+            "spend_change": None,
+            "revenue_change": None,
+            "roas_change": None,
+            "conversions_change": None,
+        }
+    return {
+        "spend_change": calc_change(cur["spend"], prev["spend"]),
+        "revenue_change": calc_change(cur["revenue"], prev["revenue"]),
+        "roas_change": calc_change(cur["roas"], prev["roas"]),
+        "conversions_change": calc_change(cur["conversions"], prev["conversions"]),
+    }
+
+
+@router.get("/dashboard/breakdown/platform")
+def breakdown_by_platform(
+    country: str = Query(None),
+    platform: str = Query(None),
+    funnel_stage: str = Query(None),
+    date_from: str = Query(None),
+    date_to: str = Query(None),
+    account_id: str = Query(None),
+    branches: str = Query(None),
+    current_user: User = Depends(require_section("analytics")),
+    db: Session = Depends(get_db),
+):
+    """Per-platform spend/ROAS/conversions breakdown — honors all dashboard
+    filters (country, funnel, branch, date) for cross-filter UI."""
+    try:
+        account_id, scoped_ids, err = _resolve_scope(db, current_user, account_id, branches)
+        if err:
+            return _api_response(error=err)
+
+        display_currency, convert_to_vnd = _resolve_currency(db, account_id, scoped_ids)
+
+        if not date_from or not date_to:
+            df, dt = _default_date_range()
+            date_from = date_from or df.isoformat()
+            date_to = date_to or dt.isoformat()
+        df = date.fromisoformat(date_from)
+        dt = date.fromisoformat(date_to)
+        prev_from, prev_to = get_prev_period(df, dt)
+
+        def _query(d_from, d_to):
+            q = (
+                db.query(
+                    MetricsCache.platform.label("platform"),
+                    AdAccount.currency.label("currency"),
+                    func.sum(MetricsCache.spend).label("spend"),
+                    func.sum(MetricsCache.impressions).label("impressions"),
+                    func.sum(MetricsCache.clicks).label("clicks"),
+                    func.sum(MetricsCache.conversions).label("conversions"),
+                    func.sum(MetricsCache.revenue).label("revenue"),
+                )
+                .join(Campaign, Campaign.id == MetricsCache.campaign_id)
+                .join(AdAccount, AdAccount.id == Campaign.account_id)
+                .outerjoin(AdSet, AdSet.id == MetricsCache.ad_set_id)
+            )
+            q = _apply_common_filters(q, country, platform, d_from, d_to,
+                                      funnel_stage, account_id, scoped_ids)
+            return q.group_by(MetricsCache.platform, AdAccount.currency).all()
+
+        def _fold(rows):
+            agg: dict[str, dict] = {}
+            for r in rows:
+                key = r.platform or "unknown"
+                cur = agg.setdefault(key, {
+                    "platform": key,
+                    "spend": 0.0, "revenue": 0.0,
+                    "impressions": 0, "clicks": 0, "conversions": 0,
+                })
+                fx = _fx(r.currency) if convert_to_vnd else 1
+                cur["spend"] += float(r.spend or 0) * fx
+                cur["revenue"] += float(r.revenue or 0) * fx
+                cur["impressions"] += int(r.impressions or 0)
+                cur["clicks"] += int(r.clicks or 0)
+                cur["conversions"] += int(r.conversions or 0)
+            for cur in agg.values():
+                cur.update(_breakdown_derive(
+                    cur["spend"], cur["revenue"], cur["impressions"],
+                    cur["clicks"], cur["conversions"],
+                ))
+            return agg
+
+        curr = _fold(_query(df, dt))
+        prev = _fold(_query(prev_from, prev_to))
+
+        items = []
+        for key, cur in curr.items():
+            items.append({**cur, **_breakdown_changes(cur, prev.get(key))})
+        items.sort(key=lambda r: r["spend"], reverse=True)
+
+        return _api_response(data={"items": items, "currency": display_currency})
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
+@router.get("/dashboard/breakdown/funnel")
+def breakdown_by_funnel(
+    country: str = Query(None),
+    platform: str = Query(None),
+    funnel_stage: str = Query(None),
+    date_from: str = Query(None),
+    date_to: str = Query(None),
+    account_id: str = Query(None),
+    branches: str = Query(None),
+    current_user: User = Depends(require_section("analytics")),
+    db: Session = Depends(get_db),
+):
+    """Per-funnel-stage (TOF/MOF/BOF/Unknown) breakdown — honors all dashboard
+    filters. Note: passing ?funnel_stage filters the rows AT query time, so the
+    response collapses to a single bar — useful when the user has clicked a
+    funnel chip and wants to see the slice's metrics rendered identically."""
+    try:
+        account_id, scoped_ids, err = _resolve_scope(db, current_user, account_id, branches)
+        if err:
+            return _api_response(error=err)
+
+        display_currency, convert_to_vnd = _resolve_currency(db, account_id, scoped_ids)
+
+        if not date_from or not date_to:
+            df, dt = _default_date_range()
+            date_from = date_from or df.isoformat()
+            date_to = date_to or dt.isoformat()
+        df = date.fromisoformat(date_from)
+        dt = date.fromisoformat(date_to)
+        prev_from, prev_to = get_prev_period(df, dt)
+
+        def _query(d_from, d_to):
+            q = (
+                db.query(
+                    Campaign.funnel_stage.label("funnel_stage"),
+                    AdAccount.currency.label("currency"),
+                    func.sum(MetricsCache.spend).label("spend"),
+                    func.sum(MetricsCache.impressions).label("impressions"),
+                    func.sum(MetricsCache.clicks).label("clicks"),
+                    func.sum(MetricsCache.conversions).label("conversions"),
+                    func.sum(MetricsCache.revenue).label("revenue"),
+                )
+                .join(Campaign, Campaign.id == MetricsCache.campaign_id)
+                .join(AdAccount, AdAccount.id == Campaign.account_id)
+                .outerjoin(AdSet, AdSet.id == MetricsCache.ad_set_id)
+            )
+            q = _apply_common_filters(q, country, platform, d_from, d_to,
+                                      funnel_stage, account_id, scoped_ids)
+            return q.group_by(Campaign.funnel_stage, AdAccount.currency).all()
+
+        def _fold(rows):
+            agg: dict[str, dict] = {}
+            for r in rows:
+                key = r.funnel_stage or "Unknown"
+                cur = agg.setdefault(key, {
+                    "funnel_stage": key,
+                    "spend": 0.0, "revenue": 0.0,
+                    "impressions": 0, "clicks": 0, "conversions": 0,
+                })
+                fx = _fx(r.currency) if convert_to_vnd else 1
+                cur["spend"] += float(r.spend or 0) * fx
+                cur["revenue"] += float(r.revenue or 0) * fx
+                cur["impressions"] += int(r.impressions or 0)
+                cur["clicks"] += int(r.clicks or 0)
+                cur["conversions"] += int(r.conversions or 0)
+            for cur in agg.values():
+                cur.update(_breakdown_derive(
+                    cur["spend"], cur["revenue"], cur["impressions"],
+                    cur["clicks"], cur["conversions"],
+                ))
+            return agg
+
+        curr = _fold(_query(df, dt))
+        prev = _fold(_query(prev_from, prev_to))
+
+        # Stable ordering: TOF → MOF → BOF → Unknown.
+        order = {"TOF": 0, "MOF": 1, "BOF": 2}
+        items = []
+        for key, cur in curr.items():
+            items.append({**cur, **_breakdown_changes(cur, prev.get(key))})
+        items.sort(key=lambda r: (order.get(r["funnel_stage"], 99), r["funnel_stage"]))
+
+        return _api_response(data={"items": items, "currency": display_currency})
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
+@router.get("/dashboard/breakdown/branch")
+def breakdown_by_branch(
+    country: str = Query(None),
+    platform: str = Query(None),
+    funnel_stage: str = Query(None),
+    date_from: str = Query(None),
+    date_to: str = Query(None),
+    account_id: str = Query(None),
+    branches: str = Query(None),
+    current_user: User = Depends(require_section("analytics")),
+    db: Session = Depends(get_db),
+):
+    """Per-branch breakdown that honors country/funnel filters.
+
+    Differs from the older /dashboard/by-branch (campaigns.py) which doesn't
+    accept country or funnel_stage. Use this for cross-filter dashboards.
+    """
+    try:
+        account_id, scoped_ids, err = _resolve_scope(db, current_user, account_id, branches)
+        if err:
+            return _api_response(error=err)
+
+        if not date_from or not date_to:
+            df, dt = _default_date_range()
+            date_from = date_from or df.isoformat()
+            date_to = date_to or dt.isoformat()
+        df = date.fromisoformat(date_from)
+        dt = date.fromisoformat(date_to)
+        prev_from, prev_to = get_prev_period(df, dt)
+
+        def _query(d_from, d_to):
+            q = (
+                db.query(
+                    Campaign.account_id.label("account_id"),
+                    AdAccount.account_name.label("account_name"),
+                    AdAccount.currency.label("currency"),
+                    func.sum(MetricsCache.spend).label("spend"),
+                    func.sum(MetricsCache.impressions).label("impressions"),
+                    func.sum(MetricsCache.clicks).label("clicks"),
+                    func.sum(MetricsCache.conversions).label("conversions"),
+                    func.sum(MetricsCache.revenue).label("revenue"),
+                )
+                .join(Campaign, Campaign.id == MetricsCache.campaign_id)
+                .join(AdAccount, AdAccount.id == Campaign.account_id)
+                .outerjoin(AdSet, AdSet.id == MetricsCache.ad_set_id)
+            )
+            q = _apply_common_filters(q, country, platform, d_from, d_to,
+                                      funnel_stage, account_id, scoped_ids)
+            return q.group_by(
+                Campaign.account_id, AdAccount.account_name, AdAccount.currency,
+            ).all()
+
+        def _match_branch(account_name: str) -> str | None:
+            nlow = (account_name or "").lower()
+            for br, patterns in BRANCH_ACCOUNT_MAP.items():
+                for p in patterns:
+                    if p.lower() in nlow:
+                        return br
+            return None
+
+        def _fold(rows):
+            agg: dict[str, dict] = {}
+            for r in rows:
+                branch = _match_branch(r.account_name)
+                if not branch:
+                    continue
+                cur = agg.setdefault(branch, {
+                    "branch": branch,
+                    "currency": BRANCH_CURRENCY.get(branch, "VND"),
+                    "spend_vnd": 0.0, "revenue_vnd": 0.0,
+                    "spend": 0.0, "revenue": 0.0,
+                    "impressions": 0, "clicks": 0, "conversions": 0,
+                })
+                fx = _fx(r.currency)
+                cur["spend_vnd"] += float(r.spend or 0) * fx
+                cur["revenue_vnd"] += float(r.revenue or 0) * fx
+                # Native-currency view (only meaningful when one branch).
+                cur["spend"] += float(r.spend or 0)
+                cur["revenue"] += float(r.revenue or 0)
+                cur["impressions"] += int(r.impressions or 0)
+                cur["clicks"] += int(r.clicks or 0)
+                cur["conversions"] += int(r.conversions or 0)
+            for cur in agg.values():
+                cur.update(_breakdown_derive(
+                    cur["spend_vnd"], cur["revenue_vnd"], cur["impressions"],
+                    cur["clicks"], cur["conversions"],
+                ))
+            return agg
+
+        curr = _fold(_query(df, dt))
+        prev = _fold(_query(prev_from, prev_to))
+
+        items = []
+        for key, cur in curr.items():
+            p = prev.get(key)
+            p_for_change = None
+            if p:
+                p_for_change = {
+                    "spend": p["spend_vnd"], "revenue": p["revenue_vnd"],
+                    "roas": p["roas"], "conversions": p["conversions"],
+                }
+            cur_for_change = {
+                "spend": cur["spend_vnd"], "revenue": cur["revenue_vnd"],
+                "roas": cur["roas"], "conversions": cur["conversions"],
+            }
+            items.append({**cur, **_breakdown_changes(cur_for_change, p_for_change)})
+        items.sort(key=lambda r: r["spend_vnd"], reverse=True)
+
+        return _api_response(data={"items": items})
     except Exception as e:
         return _api_response(error=str(e))
 

@@ -431,8 +431,9 @@ def _build_deep_link(rec: Recommendation, period_preset: str = "7d", branches: s
         qp["range"] = period_preset
         path = "/landing-pages"
     else:
-        # Default: drill into Country Dashboard with the same filters
-        path = "/country"
+        # Default: drill into the merged ADS Performance dashboard with the
+        # same filters (country/platform/funnel/branches/range).
+        path = "/"
         if country and len(country) == 2:
             qp["country"] = country
         if platform:
