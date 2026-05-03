@@ -35,7 +35,6 @@ from app.services.google_client import (
     fetch_asset_groups,
     fetch_campaign_brand_exclusions,
     fetch_campaign_metrics,
-    fetch_campaign_user_country_metrics,
     fetch_campaigns,
     fetch_conversion_action_metrics,
 )
@@ -237,28 +236,28 @@ def sync_google_metrics_window(
 
     db.commit()
 
-    # --- Campaign × user_country breakdown (Google has no ad-level user_location) ---
-    try:
-        country_rows = fetch_campaign_user_country_metrics(customer_id, date_from, date_to)
-    except Exception as e:
-        summary["errors"].append(f"Failed to fetch user_location_view: {e}")
-        country_rows = []
+    # --- Campaign × country breakdown for Booking-from-Ads matching ---
+    # Google convention: campaign names end with `_XX` ISO-2 (parse_google_country).
+    # We reuse the campaign-level insights already fetched above instead of an
+    # extra user_location_view call — the targeted-country signal matches PMS
+    # reservation country and avoids a brittle second API round-trip.
+    from app.services.parse_utils import parse_google_country
 
     now = datetime.now(timezone.utc)
-    for row in country_rows:
+    for insight in raw_metrics:
         campaign = (
             db.query(Campaign)
-            .filter(Campaign.platform_campaign_id == row["campaign_id"])
+            .filter(Campaign.platform_campaign_id == insight["campaign_id"])
             .first()
         )
         if not campaign:
             continue
-        insight_date = (
-            date.fromisoformat(row["date"]) if isinstance(row["date"], str) else row["date"]
-        )
-        country = row.get("country")
-        if not country:
+        country = parse_google_country(campaign.name or "")
+        if country in ("Unknown", "ALL", ""):
             continue
+        insight_date = (
+            date.fromisoformat(insight["date"]) if isinstance(insight["date"], str) else insight["date"]
+        )
         existing = (
             db.query(AdCountryMetric)
             .filter(
@@ -270,12 +269,12 @@ def sync_google_metrics_window(
             .first()
         )
         values = {
-            "spend": row.get("spend") or 0,
-            "impressions": row.get("impressions") or 0,
-            "clicks": row.get("clicks") or 0,
-            "revenue_website": row.get("revenue_website") or 0,
-            "revenue_offline": row.get("revenue_offline") or 0,
-            "conversions_website": row.get("conversions") or 0,
+            "spend": insight.get("spend") or 0,
+            "impressions": insight.get("impressions") or 0,
+            "clicks": insight.get("clicks") or 0,
+            "revenue_website": insight.get("revenue_website") or 0,
+            "revenue_offline": insight.get("revenue_offline") or 0,
+            "conversions_website": insight.get("conversions") or 0,
             "conversions_offline": 0,
         }
         if existing:

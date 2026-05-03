@@ -22,7 +22,6 @@ from app.models.metrics import MetricsCache
 from app.services.changelog import log_change
 from app.services.parse_utils import parse_adset_metadata, parse_campaign_metadata
 from app.services.meta_client import (
-    fetch_ad_country_insights,
     fetch_ad_insights,
     fetch_ad_set_insights,
     fetch_ad_sets,
@@ -199,25 +198,35 @@ def sync_meta_metrics_window(
     db.commit()
 
     # --- Ad × country breakdown for Booking-from-Ads matching ---
-    try:
-        country_insights = fetch_ad_country_insights(meta_account_id, access_token, date_from, date_to)
-    except Exception as e:
-        summary["errors"].append(f"Failed to fetch ad×country insights: {e}")
-        country_insights = []
-
+    # Country comes from the parent adset's first underscore segment (the
+    # platform-wide convention — same logic the dashboard / country page use)
+    # rather than from Meta's breakdowns=country call. The breakdown call
+    # was unreliable in production (returning empty in some accounts) and
+    # the targeted-country signal is what matches PMS reservation country
+    # anyway: an adset prefixed `VN_*` is targeting Vietnamese guests, so
+    # all its revenue should be attributed to VN regardless of where the
+    # individual viewer happened to be.
     now = datetime.now(timezone.utc)
-    for insight in country_insights:
+    for insight in ad_insights:
         platform_ad_id = insight.get("entity_id")
-        country = insight.get("country")
-        if not platform_ad_id or not country:
+        if not platform_ad_id:
             continue
         ad_obj = (
             db.query(Ad)
             .filter(Ad.platform_ad_id == platform_ad_id)
             .first()
         )
-        if not ad_obj:
+        if not ad_obj or not ad_obj.ad_set_id:
             continue
+        adset = db.query(AdSet).filter(AdSet.id == ad_obj.ad_set_id).first()
+        if not adset:
+            continue
+        country = (adset.country or "Unknown").strip()
+        # Skip catch-all 'ALL' adsets — they don't represent a single country
+        # and including them double-counts revenue across countries.
+        if country in ("Unknown", "ALL", ""):
+            continue
+
         insight_date = (
             date.fromisoformat(insight["date"]) if isinstance(insight["date"], str) else insight["date"]
         )
