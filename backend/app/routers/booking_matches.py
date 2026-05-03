@@ -322,6 +322,27 @@ def ads_revenue_debug(
             .all()
         )
 
+        # Whole-table state — useful when window is empty: tells us if the
+        # table is empty altogether vs only stale.
+        global_total = db.query(func.count(AdCountryMetric.id)).scalar() or 0
+        global_min = db.query(func.min(AdCountryMetric.date)).scalar()
+        global_max = db.query(func.max(AdCountryMetric.date)).scalar()
+        global_rev_rows = (
+            db.query(func.count(AdCountryMetric.id))
+            .filter(
+                (AdCountryMetric.revenue_website > 0)
+                | (AdCountryMetric.revenue_offline > 0)
+            )
+            .scalar() or 0
+        )
+        latest_dates_overall = (
+            db.query(AdCountryMetric.date)
+            .distinct()
+            .order_by(AdCountryMetric.date.desc())
+            .limit(5)
+            .all()
+        )
+
         return _api_response(data={
             "period": {"from": date_from, "to": date_to},
             "by_platform_account": items,
@@ -330,6 +351,13 @@ def ads_revenue_debug(
                 x["rows_rev_website_pos"] + x["rows_rev_offline_pos"] for x in items
             ),
             "latest_dates_with_rows": [d.date.isoformat() for d in dates_with_rows],
+            "table_state": {
+                "total_rows_all_time": int(global_total),
+                "rows_with_revenue_all_time": int(global_rev_rows),
+                "min_date": global_min.isoformat() if global_min else None,
+                "max_date": global_max.isoformat() if global_max else None,
+                "latest_dates_overall": [d.date.isoformat() for d in latest_dates_overall],
+            },
         })
     except Exception as e:
         return _api_response(error=str(e))
