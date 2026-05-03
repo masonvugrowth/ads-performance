@@ -256,6 +256,85 @@ def booking_matches_summary(
         return _api_response(error=str(e))
 
 
+@router.get("/booking-matches/ads-revenue-debug")
+def ads_revenue_debug(
+    date_from: str = Query(None),
+    date_to: str = Query(None),
+    current_user: User = Depends(require_section("analytics")),
+    db: Session = Depends(get_db),
+):
+    """Why is matching empty? Reports counts of ad_country_metrics in window
+    grouped by platform + branch + whether revenue_website / revenue_offline
+    are populated. Helps tell apart 'no ads sync ran' vs 'ads sync ran but
+    purchase events not attributed' vs 'no overlap with reservations'."""
+    try:
+        if not date_from or not date_to:
+            df, dt = _default_date_range()
+            date_from = date_from or df.isoformat()
+            date_to = date_to or dt.isoformat()
+        df = date.fromisoformat(date_from)
+        dt = date.fromisoformat(date_to)
+
+        base = (
+            db.query(
+                AdCountryMetric.platform.label("platform"),
+                AdAccount.account_name.label("account_name"),
+                func.count(AdCountryMetric.id).label("rows"),
+                func.sum(AdCountryMetric.revenue_website).label("rev_web"),
+                func.sum(AdCountryMetric.revenue_offline).label("rev_off"),
+                func.sum(AdCountryMetric.spend).label("spend"),
+                func.count(AdCountryMetric.id)
+                    .filter(AdCountryMetric.revenue_website > 0)
+                    .label("rows_rev_web_pos"),
+                func.count(AdCountryMetric.id)
+                    .filter(AdCountryMetric.revenue_offline > 0)
+                    .label("rows_rev_off_pos"),
+            )
+            .join(Campaign, Campaign.id == AdCountryMetric.campaign_id)
+            .join(AdAccount, AdAccount.id == Campaign.account_id)
+            .filter(AdCountryMetric.date >= df, AdCountryMetric.date <= dt)
+            .group_by(AdCountryMetric.platform, AdAccount.account_name)
+        )
+        rows = base.all()
+
+        items = [
+            {
+                "platform": r.platform,
+                "account_name": r.account_name,
+                "rows": int(r.rows or 0),
+                "rows_rev_website_pos": int(r.rows_rev_web_pos or 0),
+                "rows_rev_offline_pos": int(r.rows_rev_off_pos or 0),
+                "sum_revenue_website": float(r.rev_web or 0),
+                "sum_revenue_offline": float(r.rev_off or 0),
+                "sum_spend": float(r.spend or 0),
+            }
+            for r in rows
+        ]
+        items.sort(key=lambda x: (x["platform"], x["account_name"]))
+
+        # Distinct dates in window with any row at all
+        dates_with_rows = (
+            db.query(AdCountryMetric.date)
+            .filter(AdCountryMetric.date >= df, AdCountryMetric.date <= dt)
+            .distinct()
+            .order_by(AdCountryMetric.date.desc())
+            .limit(5)
+            .all()
+        )
+
+        return _api_response(data={
+            "period": {"from": date_from, "to": date_to},
+            "by_platform_account": items,
+            "total_rows_in_window": sum(x["rows"] for x in items),
+            "total_rows_with_any_revenue": sum(
+                x["rows_rev_website_pos"] + x["rows_rev_offline_pos"] for x in items
+            ),
+            "latest_dates_with_rows": [d.date.isoformat() for d in dates_with_rows],
+        })
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
 @router.post("/booking-matches/cloudbeds-sync")
 def cloudbeds_sync_one_branch(
     branch: str = Query("Saigon"),
