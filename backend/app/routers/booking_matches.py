@@ -314,6 +314,62 @@ def trigger_ads_sync(
     })
 
 
+@router.get("/booking-matches/sync-state-debug")
+def sync_state_debug(
+    current_user: User = Depends(require_section("analytics")),
+    db: Session = Depends(get_db),
+):
+    """Snapshot of every table the booking matcher needs.
+
+    If ad_country_metrics is empty we want to know whether the upstream
+    tables (ad_accounts, campaigns, ads) are also empty — if Ads has 0 rows
+    then the country-insight loop will skip every row because it can't find
+    the parent Ad record."""
+    try:
+        accounts_total = db.query(func.count(AdAccount.id)).scalar() or 0
+        accounts_active = (
+            db.query(func.count(AdAccount.id))
+            .filter(AdAccount.is_active.is_(True))
+            .scalar() or 0
+        )
+        accounts_by_platform = (
+            db.query(AdAccount.platform, func.count(AdAccount.id))
+            .group_by(AdAccount.platform)
+            .all()
+        )
+        accounts_sample = (
+            db.query(AdAccount.platform, AdAccount.account_name, AdAccount.is_active)
+            .order_by(AdAccount.account_name)
+            .limit(10)
+            .all()
+        )
+        campaigns_total = db.query(func.count(Campaign.id)).scalar() or 0
+        ads_total = db.query(func.count(Ad.id)).scalar() or 0
+        return _api_response(data={
+            "ad_accounts": {
+                "total": int(accounts_total),
+                "active": int(accounts_active),
+                "by_platform": [
+                    {"platform": p, "count": int(c)} for p, c in accounts_by_platform
+                ],
+                "sample": [
+                    {"platform": p, "account_name": n, "is_active": bool(a)}
+                    for p, n, a in accounts_sample
+                ],
+            },
+            "campaigns_total": int(campaigns_total),
+            "ads_total": int(ads_total),
+            "ad_country_metrics_total": (
+                db.query(func.count(AdCountryMetric.id)).scalar() or 0
+            ),
+            "reservations_total": (
+                db.query(func.count(Reservation.id)).scalar() or 0
+            ),
+        })
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
 @router.get("/booking-matches/ads-revenue-debug")
 def ads_revenue_debug(
     date_from: str = Query(None),
