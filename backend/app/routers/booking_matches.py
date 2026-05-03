@@ -1,10 +1,16 @@
 """Booking matches dashboard endpoints."""
 
+import logging
+import threading
 from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session
+
+from app.database import SessionLocal
+
+logger = logging.getLogger(__name__)
 
 from sqlalchemy import or_
 
@@ -254,6 +260,58 @@ def booking_matches_summary(
         })
     except Exception as e:
         return _api_response(error=str(e))
+
+
+def _run_in_thread(target, label: str, **kwargs) -> None:
+    """Fire-and-forget background task with its own DB session.
+
+    Mirrors internal_tasks._run_in_thread; duplicated here so this router
+    doesn't need to import from another router.
+    """
+    def _wrapper():
+        db = SessionLocal()
+        try:
+            logger.info("[bg-task:%s] starting", label)
+            target(db=db, **kwargs)
+            logger.info("[bg-task:%s] finished", label)
+        except Exception:
+            logger.exception("[bg-task:%s] failed", label)
+        finally:
+            db.close()
+
+    threading.Thread(target=_wrapper, name=f"bg-{label}", daemon=True).start()
+
+
+def _do_sync_ads_then_match(db, months_back: int):
+    """Full pipeline: sync entities + chunked metrics backfill + re-match."""
+    from datetime import date as _date
+    from app.services.sync_engine import sync_all_platforms
+    from app.services.booking_match_service import run_matching
+    # Reuse internal_tasks._do_sync_backfill if present, else inline.
+    from app.routers.internal_tasks import _do_sync_backfill
+    _do_sync_backfill(db, months_back=months_back)
+    today = _date.today()
+    run_matching(db, today - timedelta(days=months_back * 30), today)
+
+
+@router.post("/booking-matches/trigger-ads-sync", status_code=202)
+def trigger_ads_sync(
+    months_back: int = Query(1, ge=1, le=12),
+    current_user: User = Depends(require_section("analytics", "edit")),
+):
+    """Kick off ad metrics backfill + re-match in the background.
+
+    Use when ads-revenue-debug shows the table is stale or empty. Walks
+    backwards in 30-day chunks for every active Meta + Google account, then
+    re-runs the matcher over the same window. Runs async — endpoint returns
+    202 immediately. Expect 5-30 min depending on account count.
+    """
+    _run_in_thread(_do_sync_ads_then_match, "trigger-ads-sync", months_back=months_back)
+    return _api_response(data={
+        "status": "started",
+        "months_back": months_back,
+        "note": "Sync runs in background. Re-run ads-revenue-debug + cloudbeds-sync after 5-30 min.",
+    })
 
 
 @router.get("/booking-matches/ads-revenue-debug")
