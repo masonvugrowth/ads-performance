@@ -1,16 +1,10 @@
 """Booking matches dashboard endpoints."""
 
-import logging
-import threading
 from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session
-
-from app.database import SessionLocal
-
-logger = logging.getLogger(__name__)
 
 from sqlalchemy import or_
 
@@ -261,339 +255,48 @@ def booking_matches_summary(
     except Exception as e:
         return _api_response(error=str(e))
 
+@router.post("/booking-matches/run-async", status_code=202)
+def trigger_match_run_async(
+    date_from: str = Query(..., description="ISO date, e.g. 2026-01-01"),
+    date_to: str = Query(..., description="ISO date"),
+    skip_sync: bool = Query(False, description="Skip PMS sync, only re-run matching"),
+    current_user: User = Depends(require_section("analytics", "edit")),
+):
+    """Like /booking-matches/run but spawns a daemon thread so the request
+    returns 202 immediately. Use for long windows (e.g. full year) where the
+    sync would otherwise exceed Zeabur's 225s ingress timeout."""
+    import logging
+    import threading
 
-def _run_in_thread(target, label: str, **kwargs) -> None:
-    """Fire-and-forget background task with its own DB session.
+    from app.database import SessionLocal
 
-    Mirrors internal_tasks._run_in_thread; duplicated here so this router
-    doesn't need to import from another router.
-    """
-    def _wrapper():
+    log = logging.getLogger(__name__)
+    df = date.fromisoformat(date_from)
+    dt = date.fromisoformat(date_to)
+
+    def _worker():
         db = SessionLocal()
         try:
-            logger.info("[bg-task:%s] starting", label)
-            target(db=db, **kwargs)
-            logger.info("[bg-task:%s] finished", label)
+            log.info("[booking-sync-async] %s..%s starting", df, dt)
+            if not skip_sync:
+                sync_reservations(db, df, dt)
+            run_matching(db, df, dt)
+            log.info("[booking-sync-async] %s..%s done", df, dt)
         except Exception:
-            logger.exception("[bg-task:%s] failed", label)
+            log.exception("[booking-sync-async] %s..%s failed", df, dt)
         finally:
             db.close()
 
-    threading.Thread(target=_wrapper, name=f"bg-{label}", daemon=True).start()
-
-
-def _do_sync_ads_then_match(db, months_back: int):
-    """Full pipeline: sync entities + chunked metrics backfill + re-match."""
-    from datetime import date as _date
-    from app.services.sync_engine import sync_all_platforms
-    from app.services.booking_match_service import run_matching
-    # Reuse internal_tasks._do_sync_backfill if present, else inline.
-    from app.routers.internal_tasks import _do_sync_backfill
-    _do_sync_backfill(db, months_back=months_back)
-    today = _date.today()
-    run_matching(db, today - timedelta(days=months_back * 30), today)
-
-
-@router.post("/booking-matches/trigger-ads-sync", status_code=202)
-def trigger_ads_sync(
-    months_back: int = Query(1, ge=1, le=12),
-    current_user: User = Depends(require_section("analytics", "edit")),
-):
-    """Kick off ad metrics backfill + re-match in the background.
-
-    Use when ads-revenue-debug shows the table is stale or empty. Walks
-    backwards in 30-day chunks for every active Meta + Google account, then
-    re-runs the matcher over the same window. Runs async — endpoint returns
-    202 immediately. Expect 5-30 min depending on account count.
-    """
-    _run_in_thread(_do_sync_ads_then_match, "trigger-ads-sync", months_back=months_back)
+    threading.Thread(
+        target=_worker, name=f"booking-sync-{date_from}-{date_to}", daemon=True,
+    ).start()
     return _api_response(data={
         "status": "started",
-        "months_back": months_back,
-        "note": "Sync runs in background. Re-run ads-revenue-debug + cloudbeds-sync after 5-30 min.",
+        "date_from": date_from,
+        "date_to": date_to,
+        "skip_sync": skip_sync,
+        "note": "Runs in background. Refresh /booking dashboard after 5-15 min.",
     })
-
-
-@router.post("/booking-matches/probe-meta-country")
-def probe_meta_country(
-    account_name_contains: str = Query("Saigon"),
-    days_back: int = Query(7, ge=1, le=30),
-    current_user: User = Depends(require_section("analytics", "edit")),
-    db: Session = Depends(get_db),
-):
-    """Synchronously probe Meta's ad×country insights for one account.
-
-    Bypasses the background sync entirely so we see the actual exception
-    if Meta Graph API is unreachable / token broken / country breakdown
-    not enabled. Pick an account by substring of account_name."""
-    try:
-        from app.services.meta_client import fetch_ad_country_insights
-        account = (
-            db.query(AdAccount)
-            .filter(
-                AdAccount.platform == "meta",
-                AdAccount.account_name.ilike(f"%{account_name_contains}%"),
-                AdAccount.is_active.is_(True),
-            )
-            .first()
-        )
-        if not account:
-            return _api_response(error=f"No active Meta account matching '{account_name_contains}'")
-
-        meta_account_id = (
-            account.account_id if account.account_id.startswith("act_")
-            else f"act_{account.account_id}"
-        )
-        date_to = date.today()
-        date_from = date_to - timedelta(days=days_back)
-
-        try:
-            rows = fetch_ad_country_insights(
-                meta_account_id, account.access_token_enc, date_from, date_to,
-            )
-        except Exception as e:
-            return _api_response(data={
-                "account": account.account_name,
-                "meta_account_id": meta_account_id,
-                "date_from": date_from.isoformat(),
-                "date_to": date_to.isoformat(),
-                "exception_type": type(e).__name__,
-                "exception": str(e),
-            }, error=f"fetch_ad_country_insights raised {type(e).__name__}")
-
-        sample = rows[:3] if rows else []
-        countries = sorted({r.get("country") for r in rows if r.get("country")})
-        return _api_response(data={
-            "account": account.account_name,
-            "meta_account_id": meta_account_id,
-            "date_from": date_from.isoformat(),
-            "date_to": date_to.isoformat(),
-            "rows_returned": len(rows),
-            "distinct_countries": countries,
-            "sample_rows": sample,
-        })
-    except Exception as e:
-        return _api_response(error=str(e))
-
-
-@router.get("/booking-matches/sync-state-debug")
-def sync_state_debug(
-    current_user: User = Depends(require_section("analytics")),
-    db: Session = Depends(get_db),
-):
-    """Snapshot of every table the booking matcher needs.
-
-    If ad_country_metrics is empty we want to know whether the upstream
-    tables (ad_accounts, campaigns, ads) are also empty — if Ads has 0 rows
-    then the country-insight loop will skip every row because it can't find
-    the parent Ad record."""
-    try:
-        accounts_total = db.query(func.count(AdAccount.id)).scalar() or 0
-        accounts_active = (
-            db.query(func.count(AdAccount.id))
-            .filter(AdAccount.is_active.is_(True))
-            .scalar() or 0
-        )
-        accounts_by_platform = (
-            db.query(AdAccount.platform, func.count(AdAccount.id))
-            .group_by(AdAccount.platform)
-            .all()
-        )
-        accounts_sample = (
-            db.query(AdAccount.platform, AdAccount.account_name, AdAccount.is_active)
-            .order_by(AdAccount.account_name)
-            .limit(10)
-            .all()
-        )
-        campaigns_total = db.query(func.count(Campaign.id)).scalar() or 0
-        ads_total = db.query(func.count(Ad.id)).scalar() or 0
-        return _api_response(data={
-            "ad_accounts": {
-                "total": int(accounts_total),
-                "active": int(accounts_active),
-                "by_platform": [
-                    {"platform": p, "count": int(c)} for p, c in accounts_by_platform
-                ],
-                "sample": [
-                    {"platform": p, "account_name": n, "is_active": bool(a)}
-                    for p, n, a in accounts_sample
-                ],
-            },
-            "campaigns_total": int(campaigns_total),
-            "ads_total": int(ads_total),
-            "ad_country_metrics_total": (
-                db.query(func.count(AdCountryMetric.id)).scalar() or 0
-            ),
-            "reservations_total": (
-                db.query(func.count(Reservation.id)).scalar() or 0
-            ),
-        })
-    except Exception as e:
-        return _api_response(error=str(e))
-
-
-@router.get("/booking-matches/ads-revenue-debug")
-def ads_revenue_debug(
-    date_from: str = Query(None),
-    date_to: str = Query(None),
-    current_user: User = Depends(require_section("analytics")),
-    db: Session = Depends(get_db),
-):
-    """Why is matching empty? Reports counts of ad_country_metrics in window
-    grouped by platform + branch + whether revenue_website / revenue_offline
-    are populated. Helps tell apart 'no ads sync ran' vs 'ads sync ran but
-    purchase events not attributed' vs 'no overlap with reservations'."""
-    try:
-        if not date_from or not date_to:
-            df, dt = _default_date_range()
-            date_from = date_from or df.isoformat()
-            date_to = date_to or dt.isoformat()
-        df = date.fromisoformat(date_from)
-        dt = date.fromisoformat(date_to)
-
-        base = (
-            db.query(
-                AdCountryMetric.platform.label("platform"),
-                AdAccount.account_name.label("account_name"),
-                func.count(AdCountryMetric.id).label("rows"),
-                func.sum(AdCountryMetric.revenue_website).label("rev_web"),
-                func.sum(AdCountryMetric.revenue_offline).label("rev_off"),
-                func.sum(AdCountryMetric.spend).label("spend"),
-                func.count(AdCountryMetric.id)
-                    .filter(AdCountryMetric.revenue_website > 0)
-                    .label("rows_rev_web_pos"),
-                func.count(AdCountryMetric.id)
-                    .filter(AdCountryMetric.revenue_offline > 0)
-                    .label("rows_rev_off_pos"),
-            )
-            .join(Campaign, Campaign.id == AdCountryMetric.campaign_id)
-            .join(AdAccount, AdAccount.id == Campaign.account_id)
-            .filter(AdCountryMetric.date >= df, AdCountryMetric.date <= dt)
-            .group_by(AdCountryMetric.platform, AdAccount.account_name)
-        )
-        rows = base.all()
-
-        items = [
-            {
-                "platform": r.platform,
-                "account_name": r.account_name,
-                "rows": int(r.rows or 0),
-                "rows_rev_website_pos": int(r.rows_rev_web_pos or 0),
-                "rows_rev_offline_pos": int(r.rows_rev_off_pos or 0),
-                "sum_revenue_website": float(r.rev_web or 0),
-                "sum_revenue_offline": float(r.rev_off or 0),
-                "sum_spend": float(r.spend or 0),
-            }
-            for r in rows
-        ]
-        items.sort(key=lambda x: (x["platform"], x["account_name"]))
-
-        # Distinct dates in window with any row at all
-        dates_with_rows = (
-            db.query(AdCountryMetric.date)
-            .filter(AdCountryMetric.date >= df, AdCountryMetric.date <= dt)
-            .distinct()
-            .order_by(AdCountryMetric.date.desc())
-            .limit(5)
-            .all()
-        )
-
-        # Whole-table state — useful when window is empty: tells us if the
-        # table is empty altogether vs only stale.
-        global_total = db.query(func.count(AdCountryMetric.id)).scalar() or 0
-        global_min = db.query(func.min(AdCountryMetric.date)).scalar()
-        global_max = db.query(func.max(AdCountryMetric.date)).scalar()
-        global_rev_rows = (
-            db.query(func.count(AdCountryMetric.id))
-            .filter(
-                (AdCountryMetric.revenue_website > 0)
-                | (AdCountryMetric.revenue_offline > 0)
-            )
-            .scalar() or 0
-        )
-        latest_dates_overall = (
-            db.query(AdCountryMetric.date)
-            .distinct()
-            .order_by(AdCountryMetric.date.desc())
-            .limit(5)
-            .all()
-        )
-
-        return _api_response(data={
-            "period": {"from": date_from, "to": date_to},
-            "by_platform_account": items,
-            "total_rows_in_window": sum(x["rows"] for x in items),
-            "total_rows_with_any_revenue": sum(
-                x["rows_rev_website_pos"] + x["rows_rev_offline_pos"] for x in items
-            ),
-            "latest_dates_with_rows": [d.date.isoformat() for d in dates_with_rows],
-            "table_state": {
-                "total_rows_all_time": int(global_total),
-                "rows_with_revenue_all_time": int(global_rev_rows),
-                "min_date": global_min.isoformat() if global_min else None,
-                "max_date": global_max.isoformat() if global_max else None,
-                "latest_dates_overall": [d.date.isoformat() for d in latest_dates_overall],
-            },
-        })
-    except Exception as e:
-        return _api_response(error=str(e))
-
-
-@router.post("/booking-matches/cloudbeds-sync")
-def cloudbeds_sync_one_branch(
-    branch: str = Query("Saigon"),
-    days_back: int = Query(30, ge=1, le=365),
-    rerun_match: bool = Query(True, description="Re-run booking matching after sync"),
-    current_user: User = Depends(require_section("analytics", "edit")),
-    db: Session = Depends(get_db),
-):
-    """One-shot Cloudbeds sync for a single branch + optional re-match.
-
-    Pulls reservations created in the last `days_back` days from Cloudbeds
-    for the given branch (must have CB_API_KEY_<BRANCH> + CB_PROPERTY_ID
-    configured), upserts into reservations, then optionally re-runs the
-    matching pass over the same window.
-    """
-    try:
-        from app.services.cloudbeds_sync import sync_branch as cb_sync_branch
-        date_to = date.today()
-        date_from = date_to - timedelta(days=days_back)
-        sync_summary = cb_sync_branch(db, branch, date_from, date_to)
-        match_summary = None
-        if rerun_match:
-            match_summary = run_matching(db, date_from, date_to)
-        return _api_response(data={
-            "cloudbeds_sync": sync_summary,
-            "matching": match_summary,
-        })
-    except ValueError as e:
-        return _api_response(error=str(e))
-    except Exception as e:
-        return _api_response(error=str(e))
-
-
-@router.post("/booking-matches/cloudbeds-ping")
-def cloudbeds_ping(
-    branch: str = Query("Saigon"),
-    days_back: int = Query(7, ge=1, le=90),
-    current_user: User = Depends(require_section("analytics", "edit")),
-    db: Session = Depends(get_db),
-):
-    """Diagnostic: probe Cloudbeds API for a branch via the logged-in session.
-
-    Convenience wrapper around services.cloudbeds_client.probe — same payload
-    as the internal-secret-protected endpoint but reachable from the browser
-    while logged in. Returns which auth flavour worked + a sample reservation.
-    """
-    try:
-        from app.services.cloudbeds_client import probe
-        date_to = date.today()
-        date_from = date_to - timedelta(days=days_back)
-        return _api_response(data=probe(branch, date_from, date_to))
-    except ValueError as e:
-        return _api_response(error=str(e))
-    except Exception as e:
-        return _api_response(error=str(e))
 
 
 @router.post("/booking-matches/run")
