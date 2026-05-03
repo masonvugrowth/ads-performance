@@ -314,6 +314,68 @@ def trigger_ads_sync(
     })
 
 
+@router.post("/booking-matches/probe-meta-country")
+def probe_meta_country(
+    account_name_contains: str = Query("Saigon"),
+    days_back: int = Query(7, ge=1, le=30),
+    current_user: User = Depends(require_section("analytics", "edit")),
+    db: Session = Depends(get_db),
+):
+    """Synchronously probe Meta's ad×country insights for one account.
+
+    Bypasses the background sync entirely so we see the actual exception
+    if Meta Graph API is unreachable / token broken / country breakdown
+    not enabled. Pick an account by substring of account_name."""
+    try:
+        from app.services.meta_client import fetch_ad_country_insights
+        account = (
+            db.query(AdAccount)
+            .filter(
+                AdAccount.platform == "meta",
+                AdAccount.account_name.ilike(f"%{account_name_contains}%"),
+                AdAccount.is_active.is_(True),
+            )
+            .first()
+        )
+        if not account:
+            return _api_response(error=f"No active Meta account matching '{account_name_contains}'")
+
+        meta_account_id = (
+            account.account_id if account.account_id.startswith("act_")
+            else f"act_{account.account_id}"
+        )
+        date_to = date.today()
+        date_from = date_to - timedelta(days=days_back)
+
+        try:
+            rows = fetch_ad_country_insights(
+                meta_account_id, account.access_token_enc, date_from, date_to,
+            )
+        except Exception as e:
+            return _api_response(data={
+                "account": account.account_name,
+                "meta_account_id": meta_account_id,
+                "date_from": date_from.isoformat(),
+                "date_to": date_to.isoformat(),
+                "exception_type": type(e).__name__,
+                "exception": str(e),
+            }, error=f"fetch_ad_country_insights raised {type(e).__name__}")
+
+        sample = rows[:3] if rows else []
+        countries = sorted({r.get("country") for r in rows if r.get("country")})
+        return _api_response(data={
+            "account": account.account_name,
+            "meta_account_id": meta_account_id,
+            "date_from": date_from.isoformat(),
+            "date_to": date_to.isoformat(),
+            "rows_returned": len(rows),
+            "distinct_countries": countries,
+            "sample_rows": sample,
+        })
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
 @router.get("/booking-matches/sync-state-debug")
 def sync_state_debug(
     current_user: User = Depends(require_section("analytics")),
