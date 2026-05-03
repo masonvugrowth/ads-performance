@@ -112,7 +112,15 @@ def sync_reservations(
     date_from: date,
     date_to: date,
 ) -> dict:
-    """Pull reservations from PMS and upsert into DB.
+    """Pull reservations from every PMS source and upsert into DB.
+
+    Branch dispatch:
+      - For each branch with Cloudbeds credentials configured, run the
+        Cloudbeds path (cloudbeds_sync.sync_branch). This is the new path —
+        cleaner ISO-2 country, structured rates, per-property API keys.
+      - For all other branches, fall back to the legacy HID Dashboard PMS.
+        Rows whose branch IS handled by Cloudbeds are skipped here so we
+        don't double-store the same reservation under two row identities.
 
     Behaviour notes:
       - Holds a Postgres advisory lock so two overlapping syncs don't deadlock
@@ -125,7 +133,7 @@ def sync_reservations(
         lands.
 
     Returns:
-        Summary dict with created, updated, skipped, errors counts.
+        Summary dict with cloudbeds[] per-branch summaries + hid summary.
     """
     if not _try_advisory_lock(db):
         logger.warning("Reservation sync already running on another worker — skipping")
@@ -136,11 +144,32 @@ def sync_reservations(
         }
 
     try:
+        # Imported lazily to avoid circular import (booking_match_service
+        # imports from this module too).
+        from app.services import cloudbeds_client
+        from app.services.cloudbeds_sync import sync_branch as cloudbeds_sync_branch
+        from app.services.booking_match_service import normalize_branch
+
+        cloudbeds_branches = cloudbeds_client.configured_branches()
+        cloudbeds_summaries: list[dict] = []
+        for branch_key in cloudbeds_branches:
+            try:
+                cloudbeds_summaries.append(
+                    cloudbeds_sync_branch(db, branch_key, date_from, date_to)
+                )
+            except Exception as e:
+                logger.exception(
+                    "Cloudbeds sync failed for branch=%s", branch_key,
+                )
+                cloudbeds_summaries.append({"branch": branch_key, "error": str(e)})
+
+        cloudbeds_branch_set = set(cloudbeds_branches)
         raw_reservations = fetch_reservations(date_from, date_to)
 
         created = 0
         updated = 0
         skipped = 0
+        skipped_cloudbeds = 0
         errors: list[str] = []
         in_batch = 0
         batches_committed = 0
@@ -165,6 +194,11 @@ def sync_reservations(
                 # Skip non-hotel branches
                 if branch not in HOTEL_BRANCHES:
                     skipped += 1
+                    continue
+
+                # Skip branches handled by Cloudbeds — avoid duplicate stores
+                if normalize_branch(branch) in cloudbeds_branch_set:
+                    skipped_cloudbeds += 1
                     continue
 
                 res_number = raw.get("reservation_number")
@@ -227,12 +261,16 @@ def sync_reservations(
         summary = {
             "date_from": date_from.isoformat(),
             "date_to": date_to.isoformat(),
-            "total_fetched": len(raw_reservations),
-            "created": created,
-            "updated": updated,
-            "skipped": skipped,
-            "batches_committed": batches_committed,
-            "errors": errors,
+            "cloudbeds": cloudbeds_summaries,
+            "hid": {
+                "total_fetched": len(raw_reservations),
+                "created": created,
+                "updated": updated,
+                "skipped": skipped,
+                "skipped_handled_by_cloudbeds": skipped_cloudbeds,
+                "batches_committed": batches_committed,
+                "errors": errors,
+            },
         }
         logger.info("Reservation sync complete: %s", summary)
         return summary

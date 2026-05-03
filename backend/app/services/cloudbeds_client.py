@@ -53,6 +53,22 @@ def get_credentials(branch: str) -> tuple[str, str]:
     return api_key, property_id
 
 
+def has_credentials(branch: str) -> bool:
+    """True iff both API key and property ID are set for the branch."""
+    mapping = _BRANCH_CREDS.get(branch)
+    if not mapping:
+        return False
+    api_key_attr, property_id_attr = mapping
+    return bool(getattr(settings, api_key_attr, "")) and bool(
+        getattr(settings, property_id_attr, "")
+    )
+
+
+def configured_branches() -> list[str]:
+    """Branch keys that currently have working Cloudbeds credentials."""
+    return [b for b in _BRANCH_CREDS if has_credentials(b)]
+
+
 def _auth_variants(api_key: str) -> list[dict[str, Any]]:
     """Every auth header shape we've seen Cloudbeds accept. Tried in order."""
     return [
@@ -199,10 +215,15 @@ def fetch_reservations(
     page_size: int = 100,
     auth_variant: str = "authorization_bearer",
 ) -> list[dict]:
-    """Fetch every reservation for a branch in the given checkIn range.
+    """Fetch reservations CREATED in [date_from, date_to] for a branch.
 
-    Cloudbeds pagination uses pageNumber (1-indexed) + pageSize. We loop until
-    the returned page is smaller than page_size or data is empty.
+    Uses getReservationsWithRateDetails because the plain getReservations is
+    too thin — it skips guestCountry, total, sourceCategory, and assigned
+    rooms which we need for ads matching. Filters on resultsFrom/resultsTo
+    (date_created) since booking-from-ads matching keys on the booking date,
+    not the check-in date.
+
+    Pagination: pageNumber is 1-indexed; loop until a short page or empty.
     """
     api_key, property_id = get_credentials(branch)
     variant = next(
@@ -212,14 +233,14 @@ def fetch_reservations(
     if not variant:
         raise ValueError(f"Unknown auth_variant '{auth_variant}'")
 
-    url = f"{BASE_URL}/getReservations"
+    url = f"{BASE_URL}/getReservationsWithRateDetails"
     out: list[dict] = []
     page = 1
     while True:
         params = {
             "propertyID": property_id,
-            "checkInFrom": date_from.isoformat(),
-            "checkInTo": date_to.isoformat(),
+            "resultsFrom": date_from.isoformat(),
+            "resultsTo": date_to.isoformat(),
             "pageNumber": page,
             "pageSize": page_size,
         }
@@ -237,7 +258,7 @@ def fetch_reservations(
         page += 1
 
     logger.info(
-        "Fetched %d Cloudbeds reservations for branch=%s (%s → %s)",
+        "Fetched %d Cloudbeds reservations for branch=%s (%s → %s by dateCreated)",
         len(out), branch, date_from, date_to,
     )
     return out

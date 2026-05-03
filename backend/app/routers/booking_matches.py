@@ -256,6 +256,39 @@ def booking_matches_summary(
         return _api_response(error=str(e))
 
 
+@router.post("/booking-matches/cloudbeds-sync")
+def cloudbeds_sync_one_branch(
+    branch: str = Query("Saigon"),
+    days_back: int = Query(30, ge=1, le=365),
+    rerun_match: bool = Query(True, description="Re-run booking matching after sync"),
+    current_user: User = Depends(require_section("analytics", "edit")),
+    db: Session = Depends(get_db),
+):
+    """One-shot Cloudbeds sync for a single branch + optional re-match.
+
+    Pulls reservations created in the last `days_back` days from Cloudbeds
+    for the given branch (must have CB_API_KEY_<BRANCH> + CB_PROPERTY_ID
+    configured), upserts into reservations, then optionally re-runs the
+    matching pass over the same window.
+    """
+    try:
+        from app.services.cloudbeds_sync import sync_branch as cb_sync_branch
+        date_to = date.today()
+        date_from = date_to - timedelta(days=days_back)
+        sync_summary = cb_sync_branch(db, branch, date_from, date_to)
+        match_summary = None
+        if rerun_match:
+            match_summary = run_matching(db, date_from, date_to)
+        return _api_response(data={
+            "cloudbeds_sync": sync_summary,
+            "matching": match_summary,
+        })
+    except ValueError as e:
+        return _api_response(error=str(e))
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
 @router.post("/booking-matches/cloudbeds-ping")
 def cloudbeds_ping(
     branch: str = Query("Saigon"),

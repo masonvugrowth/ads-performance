@@ -36,7 +36,19 @@ logger = logging.getLogger(__name__)
 
 HOTEL_BRANCH_KEYS = ["Saigon", "Taipei", "1948", "Osaka", "Oani"]
 AMOUNT_TOLERANCE = 0.5
-WEBSITE_SOURCE = "website/booking engine"
+
+# Sources that count as "website purchase" on the ads side. Originally just
+# the HID PMS literal. Cloudbeds returns "Booking Engine" (capital B, no
+# slash) for its direct widget, plus some properties customise it to
+# "Direct" / "Direct Booking" — accept all common spellings.
+WEBSITE_SOURCE = "website/booking engine"  # legacy, kept for back-compat
+_WEBSITE_SOURCE_PATTERNS: set[str] = {
+    "website/booking engine",  # HID
+    "booking engine",          # Cloudbeds default
+    "direct",                  # Cloudbeds (some configs)
+    "direct booking",
+    "myfrontdesk booking engine",  # older Cloudbeds label
+}
 
 
 def normalize_branch(name: str | None) -> str | None:
@@ -106,16 +118,25 @@ _ISO_TO_NAMES: dict[str, tuple[str, ...]] = {
 
 
 def country_iso_matches_reservation(iso: str | None, reservation_country: str | None) -> bool:
-    """Loose compare between an ads-side ISO-2 code and a PMS-side country string."""
+    """Loose compare between an ads-side ISO-2 code and a PMS-side country string.
+
+    Handles both shapes we store:
+      - HID PMS: full names ("Vietnam", "Japan")
+      - Cloudbeds: ISO-2 codes ("VN", "JP")
+    """
     if not iso or not reservation_country:
         return False
     iso_upper = iso.upper()
-    res_lower = reservation_country.lower()
+    res_stripped = reservation_country.strip()
+    # Fast path: Cloudbeds-style ISO-2 stored verbatim.
+    if len(res_stripped) == 2 and res_stripped.upper() == iso_upper:
+        return True
+    res_lower = res_stripped.lower()
     names = _ISO_TO_NAMES.get(iso_upper, ())
     if any(n in res_lower for n in names):
         return True
     # Last resort: ISO code present as a token in the reservation country.
-    return iso_upper in reservation_country.upper().split()
+    return iso_upper in res_stripped.upper().split()
 
 
 def _find_combination(
@@ -180,7 +201,7 @@ def _try_match(
 
 
 def _is_website_source(source: str | None) -> bool:
-    return (source or "").strip().lower() == WEBSITE_SOURCE
+    return (source or "").strip().lower() in _WEBSITE_SOURCE_PATTERNS
 
 
 def _build_booking_match(
