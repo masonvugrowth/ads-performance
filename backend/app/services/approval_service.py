@@ -386,21 +386,13 @@ def _notify_creator_of_result(
 def _queue_emails(email_tasks: list):
     """Send emails out-of-band so the API response isn't blocked.
 
-    Production runs on Zeabur cron (no Celery/Redis) so we send via a
-    daemon thread. Celery is tried first to stay forward-compatible if a
-    worker is ever brought back.
+    Production runs on Zeabur cron (no Celery/Redis); we fire-and-forget
+    via a daemon thread so the request returns immediately. Calling
+    Celery's .delay() here would block on broker-connection retries
+    against the now-removed Redis instance.
     """
     if not email_tasks:
         return
-
-    try:
-        from app.tasks.email_tasks import send_email_task
-
-        for to, subject, html in email_tasks:
-            send_email_task.delay(to, subject, html)
-        return
-    except Exception as e:
-        logger.info("Celery unavailable, sending emails via thread: %s", e)
 
     import threading
 
