@@ -49,12 +49,9 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRE_HOURS: int = 24
 
-    # SMTP (Email notifications)
-    SMTP_HOST: str = "smtp.gmail.com"
-    SMTP_PORT: int = 587
-    SMTP_USER: str = ""
-    SMTP_PASSWORD: str = ""
-    SMTP_FROM_NAME: str = "Meander Ads Platform"
+    # Email (Resend HTTP API)
+    RESEND_API_KEY: str = ""
+    EMAIL_FROM: str = ""
 
     # App Config
     APP_ENV: str = "development"

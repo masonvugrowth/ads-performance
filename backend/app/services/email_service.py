@@ -1,33 +1,45 @@
 import logging
-import smtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
+
+import httpx
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+RESEND_API_URL = "https://api.resend.com/emails"
+
 
 def send_email(to: str, subject: str, html_body: str) -> bool:
-    """Send an email via SMTP. Returns True on success, False on failure.
+    """Send an email via Resend HTTP API. Returns True on success, False on failure.
 
-    This function should only be called from a Celery task — never block the API response.
+    Called from a background thread (or Celery task if available) so it never
+    blocks the API response.
     """
-    if not settings.SMTP_USER or not settings.SMTP_PASSWORD:
-        logger.warning("SMTP not configured — skipping email to %s: %s", to, subject)
+    if not settings.RESEND_API_KEY or not settings.EMAIL_FROM:
+        logger.warning("Resend not configured — skipping email to %s: %s", to, subject)
         return False
 
     try:
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = subject
-        msg["From"] = f"{settings.SMTP_FROM_NAME} <{settings.SMTP_USER}>"
-        msg["To"] = to
-        msg.attach(MIMEText(html_body, "html"))
-
-        with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
-            server.starttls()
-            server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
-            server.send_message(msg)
+        resp = httpx.post(
+            RESEND_API_URL,
+            headers={
+                "Authorization": f"Bearer {settings.RESEND_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "from": settings.EMAIL_FROM,
+                "to": [to],
+                "subject": subject,
+                "html": html_body,
+            },
+            timeout=15.0,
+        )
+        if resp.status_code >= 400:
+            logger.error(
+                "Resend rejected email to %s (%s): %s — %s",
+                to, subject, resp.status_code, resp.text,
+            )
+            return False
 
         logger.info("Email sent to %s: %s", to, subject)
         return True
