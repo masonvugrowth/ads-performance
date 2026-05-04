@@ -113,6 +113,7 @@ def record_decision(
     approval_id: str,
     reviewer_id: str,
     decision: str,
+    feedback: str | None = None,
 ) -> ComboApproval:
     """Record a reviewer's decision (APPROVED or REJECTED).
     After each decision, check if all reviewers have decided and update approval status.
@@ -144,6 +145,9 @@ def record_decision(
     now = datetime.now(timezone.utc)
     reviewer_row.status = decision
     reviewer_row.decided_at = now
+    cleaned_feedback = (feedback or "").strip() or None
+    if cleaned_feedback is not None:
+        reviewer_row.feedback = cleaned_feedback
 
     # Check all reviewers' decisions
     all_reviewers = (
@@ -245,6 +249,7 @@ def get_approval_detail(db: Session, approval_id: str) -> dict | None:
             "reviewer_email": user.email if user else None,
             "status": r.status,
             "decided_at": r.decided_at.isoformat() if r.decided_at else None,
+            "feedback": r.feedback,
         })
 
     # Fetch copy and material details for reviewer context

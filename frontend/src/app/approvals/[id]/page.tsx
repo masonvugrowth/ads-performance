@@ -34,6 +34,7 @@ interface ApprovalDetail {
     reviewer_name: string
     status: string
     decided_at: string | null
+    feedback: string | null
   }[]
   copy: {
     copy_id: string; headline: string; body_text: string; cta: string | null
@@ -59,6 +60,8 @@ export default function ApprovalDetailPage() {
   const [approval, setApproval] = useState<ApprovalDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [deciding, setDeciding] = useState(false)
+  const [feedback, setFeedback] = useState('')
+  const [decisionError, setDecisionError] = useState('')
   const [resubmitting, setResubmitting] = useState(false)
   const [resubmitFile, setResubmitFile] = useState('')
   const [resubmitDeadline, setResubmitDeadline] = useState('')
@@ -75,17 +78,30 @@ export default function ApprovalDetailPage() {
   useEffect(() => { fetchApproval() }, [id])
 
   const handleDecision = async (decision: string) => {
+    const trimmed = feedback.trim()
+    if (decision !== 'APPROVED' && !trimmed) {
+      setDecisionError('Please leave feedback before requesting revision or rejecting.')
+      return
+    }
+    setDecisionError('')
     setDeciding(true)
     try {
       const res = await fetch(`${API_BASE}/api/approvals/${id}/decide`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ decision }),
+        body: JSON.stringify({ decision, feedback: trimmed || null }),
       })
       const data = await res.json()
-      if (data.success) setApproval(data.data)
-    } catch {}
+      if (data.success) {
+        setApproval(data.data)
+        setFeedback('')
+      } else {
+        setDecisionError(data.error || 'Failed to submit decision')
+      }
+    } catch {
+      setDecisionError('Network error')
+    }
     setDeciding(false)
   }
 
@@ -183,6 +199,40 @@ export default function ApprovalDetailPage() {
                 <span>{approval.copy.language}</span>
                 <span>{approval.copy.target_audience}</span>
               </div>
+
+              {/* Reviewers feedback on the ad copy */}
+              <div className="mt-4 pt-3 border-t border-gray-100">
+                <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">
+                  Reviewers feedback
+                </h4>
+                {approval.reviewers.filter(r => r.feedback && r.feedback.trim()).length === 0 ? (
+                  <p className="text-xs text-gray-400 italic">No feedback yet.</p>
+                ) : (
+                  <ul className="space-y-2">
+                    {approval.reviewers
+                      .filter(r => r.feedback && r.feedback.trim())
+                      .map(r => (
+                        <li key={r.id} className="bg-gray-50 rounded-lg p-3">
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className="text-sm font-medium text-gray-900">{r.reviewer_name}</span>
+                            <span className={`text-[11px] px-1.5 py-0.5 rounded font-medium ${
+                              r.status === 'APPROVED' ? 'bg-green-100 text-green-700' :
+                              r.status === 'REJECTED' ? 'bg-red-100 text-red-700' :
+                              r.status === 'NEEDS_REVISION' ? 'bg-orange-100 text-orange-700' :
+                              'bg-amber-100 text-amber-700'
+                            }`}>{r.status}</span>
+                            {r.decided_at && (
+                              <span className="text-[11px] text-gray-400">
+                                {new Date(r.decided_at).toLocaleString()}
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-sm text-gray-700 whitespace-pre-line">{r.feedback}</p>
+                        </li>
+                      ))}
+                  </ul>
+                )}
+              </div>
             </div>
           )}
 
@@ -240,6 +290,22 @@ export default function ApprovalDetailPage() {
           {isAssignedReviewer && approval.status === 'PENDING_APPROVAL' && (
             <div className="bg-white rounded-xl border border-gray-200 p-4">
               <h3 className="text-sm font-semibold text-gray-900 mb-3">Your Decision</h3>
+              <div className="mb-3">
+                <label className="block text-xs text-gray-600 mb-1">
+                  Feedback for ad copy
+                  <span className="text-gray-400 font-normal"> (required for Needs Revision / Reject)</span>
+                </label>
+                <textarea
+                  value={feedback}
+                  onChange={e => setFeedback(e.target.value)}
+                  placeholder="What works, what to change, suggested rewrites…"
+                  rows={4}
+                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              {decisionError && (
+                <div className="bg-red-50 text-red-700 px-3 py-2 rounded-lg text-xs mb-3">{decisionError}</div>
+              )}
               <div className="flex flex-wrap gap-3">
                 <button
                   onClick={() => handleDecision('APPROVED')}

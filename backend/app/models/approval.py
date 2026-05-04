@@ -57,5 +57,6 @@ class ApprovalReviewer(Base, TimestampMixin):
     )
     status = Column(String(20), nullable=False, default="PENDING")  # PENDING | APPROVED | REJECTED
     decided_at = Column(DateTime(timezone=True), nullable=True)
+    feedback = Column(Text, nullable=True)  # Reviewer's free-text feedback on the ad copy / combo
     notified_email_at = Column(DateTime(timezone=True), nullable=True)
     notified_system_at = Column(DateTime(timezone=True), nullable=True)

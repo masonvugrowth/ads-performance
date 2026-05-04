@@ -40,6 +40,7 @@ class SubmitApprovalRequest(BaseModel):
 
 class DecisionRequest(BaseModel):
     decision: str  # APPROVED | REJECTED | NEEDS_REVISION
+    feedback: str | None = None
 
 
 class ResubmitRequest(BaseModel):
@@ -199,6 +200,7 @@ def decide_approval(
             approval_id=approval_id,
             reviewer_id=current_user.id,
             decision=body.decision,
+            feedback=body.feedback,
         )
         detail = get_approval_detail(db, approval.id)
         return _api_response(data=detail)
