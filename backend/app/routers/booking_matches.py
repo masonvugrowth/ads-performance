@@ -47,11 +47,16 @@ def _default_date_range() -> tuple[date, date]:
     return today - timedelta(days=29), today
 
 
-def _apply_branch_scope(q, column, user, db, requested_branch: str | None):
+def _apply_branch_scope(q, column, user, db, requested_branch: str | None, exact_match: bool = False):
     """Restrict a query to the user's accessible branches for analytics.
 
     Returns (ok, query, error). When ok=False, caller should return _api_response(error=err).
     When admin: no scope applied beyond the explicit `requested_branch` filter.
+
+    exact_match=True for columns that store the canonical branch key directly
+    (e.g. BookingMatch.branch = "Taipei"). exact_match=False for columns that
+    store full account/PMS names (e.g. Reservation.branch = "Meander Taipei"),
+    where ilike against BRANCH_ACCOUNT_MAP patterns is needed.
     """
     if requested_branch:
         # Explicit branch from client — validate against permissions
@@ -61,8 +66,11 @@ def _apply_branch_scope(q, column, user, db, requested_branch: str | None):
                 return False, q, f"No view access to branch '{requested_branch}'"
             if requested_branch in BRANCH_ACCOUNT_MAP and requested_branch not in allowed:
                 return False, q, f"No view access to branch '{requested_branch}'"
-        patterns = BRANCH_ACCOUNT_MAP.get(requested_branch, [requested_branch])
-        q = q.filter(or_(*[column.ilike(f"%{p}%") for p in patterns]))
+        if exact_match:
+            q = q.filter(column == requested_branch)
+        else:
+            patterns = BRANCH_ACCOUNT_MAP.get(requested_branch, [requested_branch])
+            q = q.filter(or_(*[column.ilike(f"%{p}%") for p in patterns]))
         return True, q, None
 
     if is_admin(user):
@@ -73,8 +81,11 @@ def _apply_branch_scope(q, column, user, db, requested_branch: str | None):
         # Force empty result
         q = q.filter(column == "__no_match__")
         return True, q, None
-    patterns = branch_name_patterns(allowed)
-    q = q.filter(or_(*[column.ilike(f"%{p}%") for p in patterns]))
+    if exact_match:
+        q = q.filter(column.in_(allowed))
+    else:
+        patterns = branch_name_patterns(allowed)
+        q = q.filter(or_(*[column.ilike(f"%{p}%") for p in patterns]))
     return True, q, None
 
 
@@ -132,7 +143,7 @@ def list_booking_matches(
             BookingMatch.match_date >= df,
             BookingMatch.match_date <= dt,
         )
-        ok, q, err = _apply_branch_scope(q, BookingMatch.branch, current_user, db, branch)
+        ok, q, err = _apply_branch_scope(q, BookingMatch.branch, current_user, db, branch, exact_match=True)
         if not ok:
             return _api_response(error=err)
         if channel:
@@ -178,7 +189,7 @@ def booking_matches_summary(
             BookingMatch.match_date >= df,
             BookingMatch.match_date <= dt,
         )
-        ok, base, err = _apply_branch_scope(base, BookingMatch.branch, current_user, db, branch)
+        ok, base, err = _apply_branch_scope(base, BookingMatch.branch, current_user, db, branch, exact_match=True)
         if not ok:
             return _api_response(error=err)
 
